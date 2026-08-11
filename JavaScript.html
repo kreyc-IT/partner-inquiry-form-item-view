@@ -1,0 +1,1975 @@
+<script>
+    // Helper to sanitize server-injected template ID
+    function getInitialItemId() {
+        if (window.SERVER_ITEM_ID && typeof window.SERVER_ITEM_ID === 'string' && !window.SERVER_ITEM_ID.includes('<?')) {
+            return window.SERVER_ITEM_ID.trim();
+        }
+        return '';
+    }
+
+    // Global state variables
+    let currentItemId = getInitialItemId();
+    let originalInquiryData = null;
+    let dropdownOptions = {};
+    let dropdownOptionsLoaded = false;
+    let pendingInquiryResponse = null;
+    let teacherCounter = 0;
+    let deletedSubitemIds = [];
+    let isTBD = false;
+
+    // Helper to set item ID and trigger data load
+    function setItemAndLoad(itemId) {
+        if (!itemId) return;
+        const cleanId = String(itemId).trim();
+        if (cleanId && cleanId !== currentItemId) {
+            console.log("Setting active Item ID:", cleanId);
+            currentItemId = cleanId;
+            updateItemBadge(currentItemId);
+            loadInquiryData(currentItemId);
+        }
+    }
+
+    // Identifies who is using the portal for the activity log. The web app
+    // runs as the deploying user with anonymous access, so the server cannot
+    // work this out on its own - the Monday SDK context is the only source.
+    let mondayUserId = '';
+
+    function clientMeta() {
+        return { mondayUserId: mondayUserId };
+    }
+
+    // Initialize Monday SDK if available
+    if (window.mondaySdk) {
+        try {
+            const monday = window.mondaySdk();
+            const handleContext = (res) => {
+                if (res && res.data && res.data.user && res.data.user.id) {
+                    mondayUserId = String(res.data.user.id);
+                }
+                if (res && res.data && res.data.itemId) {
+                    setItemAndLoad(res.data.itemId);
+                }
+            };
+
+            // 1. Request context on initial load
+            monday.get("context").then(handleContext).catch(err => {
+                console.log("Monday SDK get context error:", err);
+            });
+
+            // 2. Listen for context changes (e.g. user selects another item)
+            monday.listen("context", handleContext);
+        } catch (e) {
+            console.log("Monday SDK context listening skipped:", e);
+        }
+    }
+
+    // Mock google.script.run for local browser testing outside GAS environment
+    if (typeof google === 'undefined') {
+        console.warn("Running outside Google Apps Script environment. Enabling local mock server.");
+        window.google = {
+            script: {
+                run: {
+                    withSuccessHandler: function (success) {
+                        return {
+                            withFailureHandler: function (failure) {
+                                return {
+                                    getBoardDropdownOptions: function () {
+                                        setTimeout(() => {
+                                            success({
+                                                'color_mksnhewa': { title: 'Certification', type: 'color', labels: [{ name: 'Certified' }, { name: 'Pending Certification' }] },
+                                                // Deliberately unsorted, and seeded with the band labels
+                                                // that getSortedOptions() is expected to filter out.
+                                                'dropdown_mkzc6dgm': { title: 'Grade Levels', type: 'dropdown', labels: [{ name: '10th grade' }, { name: 'Upper grade levels - 9th to 12th' }, { name: 'PreK' }, { name: '3rd grade' }, { name: 'K' }, { name: '1st grade' }, { name: 'Primary grade levels - PreK to 4th' }, { name: '2nd grade' }, { name: '4th grade' }, { name: '5th grade' }, { name: 'Intermediate grade levels - 5th to 8th' }, { name: '6th grade' }, { name: '7th grade' }, { name: '8th grade' }, { name: '9th grade' }, { name: '11th grade' }, { name: '12th grade' }] },
+                                                'dropdown_mm02xrpn': { title: 'Humanities', type: 'dropdown', labels: [{ name: 'English Literature' }, { name: 'Social Studies' }, { name: 'History' }, { name: 'Geography' }, { name: 'Philosophy' }, { name: 'NA' }, { name: 'Other' }] },
+                                                'dropdown_mm02azn5': { title: 'STEM', type: 'dropdown', labels: [{ name: 'Algebra' }, { name: 'Biology' }, { name: 'Chemistry' }, { name: 'Physics' }, { name: 'Computer Science' }, { name: 'Geometry' }, { name: 'Calculus' }, { name: 'Environmental Science' }, { name: 'NA' }, { name: 'Other' }] },
+                                                'dropdown_mm02m53x': { title: 'SPED', type: 'dropdown', labels: [{ name: 'Inclusion Specialist' }, { name: 'Resource Room' }, { name: 'Behavioral Support' }, { name: 'NA' }] },
+                                                'dropdown_mm02v870': { title: 'Paraprofessional', type: 'dropdown', labels: [{ name: 'Classroom Aide' }, { name: '1-on-1 Support' }, { name: 'Bilingual Aide' }, { name: 'NA' }] },
+                                                'dropdown_mkzcbcq4': { title: 'Languages', type: 'dropdown', labels: [{ name: 'Spanish' }, { name: 'French' }, { name: 'Mandarin' }, { name: 'Haitian Creole' }, { name: 'Portuguese' }, { name: 'Other' }] },
+                                                'dropdown_mkzcq8h6': { title: 'Language Acquisition', type: 'dropdown', labels: [{ name: 'ESL / ELL' }, { name: 'Dual Language' }, { name: 'Bilingual Education' }, { name: 'NA' }] },
+                                                'dropdown_mm08qwm1': { title: 'CTE', type: 'dropdown', labels: [{ name: 'Culinary' }, { name: 'Automotive' }, { name: 'Health Sciences' }, { name: 'Information Technology' }, { name: 'NA' }, { name: 'Other' }] },
+                                                'color_mkzcn0h2': { title: 'Modality', type: 'status', labels: [{ name: 'In Person' }, { name: 'Online' }, { name: 'Hybrid' }, { name: 'Both options are fine.' }] }
+                                            });
+                                        }, 400);
+                                    },
+                                    fetchInquiryData: function (itemId) {
+                                        setTimeout(() => {
+                                            success({
+                                                success: true,
+                                                itemId: itemId || "6938836032",
+                                                schoolData: {
+                                                    schoolName: "Oakridge High School",
+                                                    address: "100 Education Way, NY 10001",
+                                                    fullName: "Sarah Jenkins",
+                                                    email: "sjenkins@oakridge.edu",
+                                                    phone: "(555) 234-5678",
+                                                    additionalInfo: "Needs bilingual STEM teachers for Fall term.",
+                                                    numberOfTeachers: "2 Teachers Requested",
+                                                    certification: "Certified",
+                                                    calendarText: "File: https://drive.google.com/sample_calendar",
+                                                    bellScheduleText: "8:00 AM - 3:15 PM Daily"
+                                                },
+                                                teachers: [
+                                                    {
+                                                        subitemId: "100001",
+                                                        name: "Math Teacher - 9th/10th",
+                                                        campusName: "Main Campus",
+                                                        campusAddress: "100 Education Way",
+                                                        description: "Algebra I & Geometry lead teacher",
+                                                        teachingSchedule: "Period 1-4 Daily",
+                                                        duties: "Homeroom + Math Olympiad advisor",
+                                                        annualSalary: "$65,000",
+                                                        proratedSalary: "$32,500",
+                                                        startDate: "2026-09-01",
+                                                        lastDay: "2027-06-15",
+                                                        instructionalDays: "288",
+                                                        gradeLevels: ["9th grade", "10th grade"],
+                                                        stem: ["Algebra", "Geometry"],
+                                                        languages: ["Spanish"],
+                                                        languageAcquisition: ["ESL / ELL"],
+                                                        humanities: [],
+                                                        sped: [],
+                                                        paraprofessional: [],
+                                                        cte: [],
+                                                        modality: "In Person"
+                                                    },
+                                                    {
+                                                        subitemId: "100002",
+                                                        name: "ESL Support Teacher",
+                                                        campusName: "West Annex",
+                                                        campusAddress: "220 Education Way",
+                                                        description: "Pull-out ESL instruction",
+                                                        teachingSchedule: "Period 2-6 Daily",
+                                                        duties: "ELL assessment coordination",
+                                                        annualSalary: "$58,000",
+                                                        proratedSalary: "$29,000",
+                                                        startDate: "2026-09-01",
+                                                        lastDay: "2027-06-15",
+                                                        instructionalDays: "288",
+                                                        gradeLevels: ["6th grade", "7th grade", "8th grade"],
+                                                        stem: [],
+                                                        languages: ["Spanish", "Haitian Creole"],
+                                                        languageAcquisition: ["ESL / ELL", "Dual Language"],
+                                                        humanities: [],
+                                                        sped: [],
+                                                        paraprofessional: [],
+                                                        cte: [],
+                                                        modality: "Hybrid"
+                                                    }
+                                                ]
+                                            });
+                                        }, 800);
+                                    },
+                                    processUpdateApplication: function (data) {
+                                        console.log("Mock Update Payload:", data);
+                                        setTimeout(() => {
+                                            success({ success: true, message: "Inquiry submission updated successfully! (Mock)" });
+                                        }, 1200);
+                                    },
+                                    findContractTargets: function (pifItemId) {
+                                        setTimeout(() => {
+                                            success({
+                                                success: true,
+                                                pifItemId: pifItemId,
+                                                pifName: "Oakridge High School",
+                                                leadId: "555001",
+                                                leadMissing: false,
+                                                candidates: [
+                                                    { targetKey: 'new_contract', targetLabel: 'New Contract', itemId: '900001', name: 'Oakridge High School - SY26/27', groupId: 'new_group59365__1', groupTitle: 'PENDING' },
+                                                    { targetKey: 'renewal', targetLabel: 'Renewal', itemId: '910001', name: 'Oakridge Renewal SY26/27', groupId: 'won_closed', groupTitle: 'Won/Closed' }
+                                                ],
+                                                excluded: [
+                                                    { targetKey: 'new_contract', targetLabel: 'New Contract', itemId: '900002', name: 'Oakridge High School - SY25/26', groupId: 'done', groupTitle: 'Done / Not Needed' }
+                                                ],
+                                                diagnostics: [
+                                                    'New Contract: 2 item(s) matched Lead 555001.',
+                                                    'Renewal: 0 item(s) linked directly to this inquiry.',
+                                                    'Renewal: 1 item(s) linked to Lead 555001.'
+                                                ]
+                                            });
+                                        }, 700);
+                                    },
+                                    getContractSyncPlan: function (pifItemId, targetKey, targetItemId) {
+                                        setTimeout(() => {
+                                            const isNew = targetKey === 'new_contract';
+                                            success({
+                                                success: true,
+                                                targetKey: targetKey,
+                                                targetLabel: isNew ? 'New Contract' : 'Renewal',
+                                                copiesFields: isNew,
+                                                target: { itemId: targetItemId, name: 'Oakridge High School - SY26/27', groupTitle: 'PENDING' },
+                                                rows: [
+                                                    { pifSubitemId: '100001', pifName: 'Math Teacher - 9th/10th', proposedName: '9th grade• 10th grade - ESL / ELL - Spanish - Oakridge High School', matchedSubitemId: '800001', matchedSubitemName: 'Existing Math subitem', matchSource: 'relation', status: 'matched' },
+                                                    { pifSubitemId: '100002', pifName: 'ESL Support Teacher', proposedName: '6th grade• 7th grade• 8th grade - ESL / ELL• Dual Language - Spanish• Haitian Creole - Oakridge High School', matchedSubitemId: '', matchedSubitemName: '', matchSource: '', status: 'unmatched' }
+                                                ],
+                                                targetSubitems: [
+                                                    { id: '800001', name: 'Existing Math subitem', linkedPifSubitemId: '100001', linkSource: 'relation' },
+                                                    { id: '800002', name: 'Unlinked legacy subitem', linkedPifSubitemId: '', linkSource: '' },
+                                                    { id: '800003', name: 'Someone else’s subitem', linkedPifSubitemId: '999999', linkSource: 'text' }
+                                                ]
+                                            });
+                                        }, 700);
+                                    },
+                                    listManualTargets: function (targetKey) {
+                                        setTimeout(() => {
+                                            const isNew = targetKey === 'new_contract';
+                                            success({
+                                                success: true,
+                                                targetKey: targetKey,
+                                                targetLabel: isNew ? 'New Contract' : 'Renewal',
+                                                groups: [
+                                                    {
+                                                        groupId: 'g_pending', groupTitle: 'PENDING', truncated: false,
+                                                        items: [
+                                                            { itemId: '900001', name: 'Oakridge High School - SY26/27' },
+                                                            { itemId: '900003', name: 'Riverside Prep - SY26/27' }
+                                                        ]
+                                                    },
+                                                    {
+                                                        groupId: 'g_won', groupTitle: 'Won/Closed', truncated: false,
+                                                        items: [
+                                                            { itemId: '900004', name: 'Eugenio Maria de Hostos Charter School' }
+                                                        ]
+                                                    }
+                                                ]
+                                            });
+                                        }, 600);
+                                    },
+                                    applyContractSync: function (payload) {
+                                        console.log("Mock Contract Sync Payload:", payload);
+                                        setTimeout(() => {
+                                            success({
+                                                success: true,
+                                                message: "New Contract updated: 1 subitem(s) created, 1 updated. (Mock)",
+                                                created: 1,
+                                                updated: 1,
+                                                failed: 0,
+                                                results: [
+                                                    { pifSubitemId: '100001', pifName: 'Math Teacher - 9th/10th', status: 'updated', targetSubitemId: '800001' },
+                                                    { pifSubitemId: '100002', pifName: 'ESL Support Teacher', status: 'created', targetSubitemId: '800009' }
+                                                ]
+                                            });
+                                        }, 900);
+                                    }
+                                };
+                            }
+                        };
+                    }
+                }
+            }
+        };
+    }
+
+    // Page Load Handler
+    window.onload = function () {
+        initTheme();
+        setupFileListeners();
+
+        // Check for URL parameter itemId if not passed via server template
+        if (!currentItemId) {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has('itemId')) {
+                currentItemId = urlParams.get('itemId').trim();
+            }
+        }
+
+        // Load Dropdown Options
+        google.script.run
+            .withSuccessHandler(options => {
+                dropdownOptions = options || {};
+                dropdownOptionsLoaded = true;
+                populateGlobalDropdowns();
+
+                // The Monday SDK can resolve an item context before this call
+                // returns. If it did, the fetched submission is parked in
+                // pendingInquiryResponse — render it now that the option
+                // labels exist, otherwise every panel renders empty.
+                if (pendingInquiryResponse) {
+                    const parked = pendingInquiryResponse;
+                    pendingInquiryResponse = null;
+                    hideLoadingOverlay();
+                    renderInquiry(parked);
+                    return;
+                }
+
+                // If item ID is available, load data
+                if (currentItemId) {
+                    updateItemBadge(currentItemId);
+                    loadInquiryData(currentItemId);
+                } else {
+                    // Give Monday SDK get("context") a brief window to resolve before showing empty banner
+                    setTimeout(() => {
+                        if (!currentItemId) {
+                            hideLoadingOverlay();
+                            document.getElementById('itemIdBanner').classList.remove('hidden');
+                            addTeacherCard(); // Add initial empty card
+                        }
+                    }, 300);
+                }
+            })
+            .withFailureHandler(handleError)
+            .getBoardDropdownOptions();
+    };
+
+    function updateItemBadge(itemId) {
+        document.getElementById('displayItemId').textContent = itemId;
+        document.getElementById('itemIdBanner').classList.add('hidden');
+    }
+
+    function loadManualItem() {
+        const inputVal = document.getElementById('manualItemId').value.trim();
+        if (!inputVal) {
+            alert("Please enter a valid Monday.com Item ID.");
+            return;
+        }
+        currentItemId = inputVal;
+        updateItemBadge(currentItemId);
+        showLoadingOverlay("Loading Item " + currentItemId, "Fetching submission from Monday.com...");
+        loadInquiryData(currentItemId);
+    }
+
+    function loadInquiryData(itemId) {
+        showLoadingOverlay("Loading Submission", "Retrieving item #" + itemId + "...");
+        google.script.run
+            .withSuccessHandler(response => {
+                if (!response || !response.success) {
+                    hideLoadingOverlay();
+                    alert(response ? response.message : "Failed to load submission.");
+                    document.getElementById('itemIdBanner').classList.remove('hidden');
+                    return;
+                }
+
+                // Teacher cards cannot render their option panels until the
+                // board's column labels are in hand. Park the payload and let
+                // the options handler render it.
+                if (!dropdownOptionsLoaded) {
+                    pendingInquiryResponse = response;
+                    showLoadingOverlay("Loading Submission", "Waiting for board options...");
+                    return;
+                }
+
+                hideLoadingOverlay();
+                renderInquiry(response);
+            })
+            .withFailureHandler(err => {
+                hideLoadingOverlay();
+                handleError(err);
+            })
+            .fetchInquiryData(itemId, clientMeta());
+    }
+
+    /**
+     * Paints a fetched submission into the form. Assumes dropdownOptions
+     * has already resolved.
+     */
+    function renderInquiry(response) {
+        // Store original loaded data snapshot for detailed edit tracking
+        originalInquiryData = response;
+
+        // A fresh load supersedes any pending deletions from the last one.
+        deletedSubitemIds = [];
+
+        // Populate School Details
+        const s = response.schoolData || {};
+        document.getElementById('schoolName').value = s.schoolName || '';
+        document.getElementById('address').value = s.address || '';
+        document.getElementById('fullName').value = s.fullName || '';
+        document.getElementById('email').value = s.email || '';
+        document.getElementById('phone').value = s.phone || '';
+        document.getElementById('additionalInfo').value = s.additionalInfo || '';
+
+        if (document.getElementById('certification')) {
+            document.getElementById('certification').value = s.certification || '';
+        }
+
+        // Handle Calendar preview
+        document.getElementById('calendarText').value = s.calendarText || '';
+        if (s.calendarText) {
+            document.getElementById('calendarPreviewText').textContent = s.calendarText;
+            document.getElementById('calendarPreview').classList.remove('hidden');
+        } else {
+            document.getElementById('calendarPreview').classList.add('hidden');
+        }
+
+        // Handle Bell Schedule preview
+        document.getElementById('bellScheduleText').value = s.bellScheduleText || '';
+        if (s.bellScheduleText) {
+            document.getElementById('bellSchedulePreviewText').textContent = s.bellScheduleText;
+            document.getElementById('bellSchedulePreview').classList.remove('hidden');
+        } else {
+            document.getElementById('bellSchedulePreview').classList.add('hidden');
+        }
+
+        // Populate Teachers
+        const container = document.getElementById('teachersContainer');
+        container.innerHTML = '';
+        teacherCounter = 0;
+
+        const hasTeachers = response.teachers && response.teachers.length > 0;
+        const isTbdSubmission = !hasTeachers && s.numberOfTeachers &&
+            s.numberOfTeachers.toLowerCase().includes('tbd');
+
+        // Reset TBD state so a reload after saving reflects what is on the board.
+        document.getElementById('tbdToggle').checked = !!isTbdSubmission;
+        toggleTBDMode(!!isTbdSubmission);
+
+        if (hasTeachers) {
+            response.teachers.forEach(teacher => {
+                addTeacherCard(teacher);
+            });
+        } else if (isTbdSubmission) {
+            document.getElementById('tbdDescription').value = s.numberOfTeachers;
+        } else {
+            addTeacherCard();
+        }
+    }
+
+    // Populate Global Certification Select Options
+    function populateGlobalDropdowns() {
+        const certSelect = document.getElementById('certification');
+        if (certSelect && dropdownOptions['color_mksnhewa'] && dropdownOptions['color_mksnhewa'].labels) {
+            certSelect.innerHTML = '<option value="">Select Certification Standard...</option>';
+            dropdownOptions['color_mksnhewa'].labels.forEach(lbl => {
+                const opt = document.createElement('option');
+                opt.value = lbl.name;
+                opt.textContent = lbl.name;
+                certSelect.appendChild(opt);
+            });
+        }
+    }
+
+    // Dynamic Teacher Card Builder
+    function addTeacherCard(data = null) {
+        teacherCounter++;
+        const cardId = teacherCounter;
+        const subitemId = data ? (data.subitemId || '') : '';
+        const subitemName = data ? (data.name || '') : '';
+
+        const container = document.getElementById('teachersContainer');
+        const card = document.createElement('div');
+        card.className = "teacher-card glass-card rounded-2xl p-6 relative border border-slate-200 dark:border-slate-800 space-y-5 animate-fade-in";
+        card.id = `teacherCard_${cardId}`;
+        card.setAttribute('data-card-id', cardId);
+        if (subitemId) {
+            card.setAttribute('data-subitem-id', subitemId);
+        }
+
+        const isExisting = !!subitemId;
+        const initialDisplayTitle = subitemName || (isExisting ? `Existing Subitem (#${subitemId})` : 'New Teacher Position');
+
+        card.innerHTML = `
+            <div class="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
+                <div class="flex items-center space-x-3">
+                    <span class="w-7 h-7 rounded-lg bg-brand-100 dark:bg-slate-800 text-brand-700 dark:text-brand-300 font-bold text-xs flex items-center justify-center border border-brand-200 dark:border-slate-700">
+                        #${cardId}
+                    </span>
+                    <div class="flex items-center space-x-2">
+                        <h3 id="teacherHeaderTitle_${cardId}" class="font-bold text-slate-900 dark:text-white text-base">
+                            ${escapeHtml(initialDisplayTitle)}
+                        </h3>
+                        ${isExisting ? `<span class="text-xs text-slate-600 dark:text-slate-300 font-medium bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-300 dark:border-slate-700">#${subitemId}</span>` : ''}
+                    </div>
+                </div>
+                <button type="button" onclick="removeTeacherCard(${cardId}, '${subitemId}')" class="text-slate-400 hover:text-red-500 text-sm p-1.5 transition-colors" title="Remove Teacher Card">
+                    <i class="fa-solid fa-trash-can"></i>
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <!-- Teacher Position Title -->
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Position / Teacher Title <span class="text-red-500">*</span></label>
+                    <input type="text" data-field="name" value="${escapeAttr(data ? data.name : '')}" oninput="updateTeacherHeaderTitle(${cardId}, this.value, '${subitemId}')" required class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+                <!-- Campus Name -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Campus Name</label>
+                    <input type="text" data-field="campusName" value="${escapeAttr(data ? data.campusName : '')}" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+                <!-- Campus Address -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Campus Address</label>
+                    <input type="text" data-field="campusAddress" value="${escapeAttr(data ? data.campusAddress : '')}" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+                <!-- Subject & Placement Options (uniform 3-column panel grid) -->
+                <div class="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+
+                    <!-- Row 1: Modality / Grade Levels / Languages -->
+                    <div>
+                        <div class="flex items-end h-8 mb-1">
+                            <label class="block text-[11px] uppercase tracking-wide font-bold text-slate-500 dark:text-slate-400">Modality Preference</label>
+                        </div>
+                        <div class="h-40">
+                            <select data-field="modality" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                                ${renderSelectOptions('color_mkzcn0h2', data ? data.modality : '')}
+                            </select>
+                        </div>
+                    </div>
+
+                    ${renderOptionPanel('gradeLevels', data)}
+                    ${renderOptionPanel('languages', data)}
+
+                    <!-- Row 2: Language Acquisition / Humanities / STEM -->
+                    ${renderOptionPanel('languageAcquisition', data)}
+                    ${renderOptionPanel('humanities', data)}
+                    ${renderOptionPanel('stem', data)}
+
+                    <!-- Row 3: SPED / Paraprofessional / CTE -->
+                    ${renderOptionPanel('sped', data)}
+                    ${renderOptionPanel('paraprofessional', data)}
+                    ${renderOptionPanel('cte', data)}
+
+                </div>
+
+                <!-- Annual Salary -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Annual Salary & Benefits</label>
+                    <input type="text" data-field="annualSalary" value="${escapeAttr(data ? data.annualSalary : '')}" placeholder="e.g. $65,000" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+                <!-- Prorated Salary -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Prorated Salary & Benefits</label>
+                    <input type="text" data-field="proratedSalary" value="${escapeAttr(data ? data.proratedSalary : '')}" placeholder="e.g. $32,500" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+                <!-- Start Date -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Start Date</label>
+                    <input type="date" data-field="startDate" value="${escapeAttr(data ? data.startDate : '')}" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+                <!-- Last Day / End Date -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">End Date / Last Day</label>
+                    <input type="date" data-field="lastDay" value="${escapeAttr(data ? data.lastDay : '')}" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+
+
+                <!-- Position Description -->
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Position Description / Requirements</label>
+                    <textarea data-field="description" rows="2" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">${escapeHtml(data ? data.description : '')}</textarea>
+                </div>
+
+                <!-- Duties -->
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Duties & Responsibilities</label>
+                    <textarea data-field="duties" rows="2" class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">${escapeHtml(data ? data.duties : '')}</textarea>
+                </div>
+
+                <!-- Teacher Schedule File Upload -->
+                <div class="md:col-span-2">
+                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Teaching Schedule (Text or File Attachment)</label>
+                    ${data && data.teachingSchedule ? `
+                        <div class="mb-2 p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-mono text-slate-600 dark:text-slate-400 truncate">
+                            Current: ${escapeHtml(data.teachingSchedule)}
+                        </div>
+                    ` : ''}
+                    <textarea data-field="teachingSchedule" rows="2" placeholder="Describe schedule or upload replacement file below..." class="teacher-input w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none">${escapeHtml(data ? data.teachingSchedule : '')}</textarea>
+                    
+                    <div class="mt-2 flex items-center justify-between text-xs">
+                        <label for="teacherSchedule_${cardId}" class="cursor-pointer text-brand-700 dark:text-brand-300 font-semibold hover:text-brand-800 dark:hover:text-brand-200 transition-colors inline-flex items-center space-x-1.5 bg-brand-50 dark:bg-slate-800 px-3 py-1.5 rounded-lg border border-brand-200 dark:border-slate-700 text-xs shadow-sm">
+                            <i class="fa-solid fa-paperclip"></i>
+                            <span>Attach/Replace Schedule File</span>
+                        </label>
+                        <span id="teacherFileName_${cardId}" class="text-slate-500 dark:text-slate-400">No file chosen</span>
+                        <input type="file" id="teacherSchedule_${cardId}" onchange="handleTeacherFileChange(${cardId}, this)" class="hidden" accept=".pdf,.doc,.docx">
+                    </div>
+                </div>
+
+            </div>
+        `;
+
+        container.appendChild(card);
+
+        // Prime the derived UI now that the card is in the DOM.
+        refreshCardCounts(card);
+    }
+
+    function updateTeacherHeaderTitle(cardId, value, subitemId) {
+        const headerElem = document.getElementById(`teacherHeaderTitle_${cardId}`);
+        if (headerElem) {
+            const title = value.trim();
+            if (title) {
+                headerElem.textContent = title;
+            } else if (subitemId) {
+                headerElem.textContent = `Existing Subitem (#${subitemId})`;
+            } else {
+                headerElem.textContent = `New Teacher Position`;
+            }
+        }
+    }
+
+    function removeTeacherCard(cardId, subitemId) {
+        if (subitemId) {
+            deletedSubitemIds.push(subitemId);
+        }
+        const card = document.getElementById(`teacherCard_${cardId}`);
+        if (card) {
+            card.remove();
+        }
+    }
+
+    /**
+     * Inclusive day count between two ISO dates (Mon-Fri = 5, not 4).
+     * Not surfaced in the UI by design — the on-screen banner was removed
+     * in version 4. The value is still computed at save time and written
+     * to the Instructional Days column (text_mkzdenv2).
+     * Returns '' when either date is missing or the range is invalid, so
+     * incomplete cards do not write a misleading "0" to Monday.com.
+     */
+    function calculateDaysBetween(startStr, endStr) {
+        if (!startStr || !endStr) return '';
+        const start = new Date(startStr);
+        const end = new Date(endStr);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) return '';
+        const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+        return diffDays > 0 ? diffDays : 0;
+    }
+
+    // ====================================================================
+    // OPTION ORDERING & FILTERING
+    // Mirrors the rules used by the original Partner Inquiry Form so the
+    // edit portal presents identical option sets in an identical order.
+    // ====================================================================
+
+    /**
+     * Every multi-select option panel on a teacher card, in render order.
+     * Single source of truth for the payload field name, the UI label and
+     * the Monday.com subitem column it maps to.
+     */
+    const OPTION_GROUPS = [
+        { field: 'gradeLevels', label: 'Grade Level(s)', columnId: 'dropdown_mkzc6dgm' },
+        { field: 'languages', label: 'Language(s)', columnId: 'dropdown_mkzcbcq4' },
+        { field: 'languageAcquisition', label: 'Language acquisition', columnId: 'dropdown_mkzcq8h6' },
+        { field: 'humanities', label: 'Humanities', columnId: 'dropdown_mm02xrpn' },
+        { field: 'stem', label: 'STEM', columnId: 'dropdown_mm02azn5' },
+        { field: 'sped', label: 'SPED', columnId: 'dropdown_mm02m53x' },
+        { field: 'paraprofessional', label: 'Paraprofessional support', columnId: 'dropdown_mm02v870' },
+        { field: 'cte', label: 'CTE', columnId: 'dropdown_mm08qwm1' }
+    ];
+
+    // Grade levels are stored unsorted on Monday.com; force pedagogical order.
+    const GRADE_ORDER = [
+        "K", "PreK", "1st grade", "2nd grade", "3rd grade", "4th grade",
+        "5th grade", "6th grade", "7th grade", "8th grade",
+        "9th grade", "10th grade", "11th grade", "12th grade", "13th grade"
+    ];
+
+    // Band labels that duplicate the individual grade options.
+    const GRADE_BAND_LABELS = [
+        "Primary grade levels - PreK to 4th",
+        "Intermediate grade levels - 5th to 8th",
+        "Upper grade levels - 9th to 12th"
+    ];
+
+    /**
+     * Returns the display-ready option names for a Monday.com column,
+     * applying the same exclusions and sort order as the original form.
+     */
+    function getSortedOptions(columnId) {
+        const column = dropdownOptions[columnId];
+        if (!column || !column.labels || column.labels.length === 0) return null;
+
+        let options = column.labels.map(opt => opt.name || opt).filter(Boolean);
+
+        if (columnId === 'dropdown_mkzc6dgm') {
+            // Grade Levels: drop the band labels, then apply explicit ordering.
+            options = options.filter(opt => !GRADE_BAND_LABELS.includes(opt));
+            options.sort((a, b) => {
+                const indexA = GRADE_ORDER.indexOf(a) === -1 ? 999 : GRADE_ORDER.indexOf(a);
+                const indexB = GRADE_ORDER.indexOf(b) === -1 ? 999 : GRADE_ORDER.indexOf(b);
+                return indexA - indexB;
+            });
+            return options;
+        }
+
+        if (columnId === 'dropdown_mkzcbcq4') {
+            // World Languages: "Other" is not offered on the teacher level.
+            options = options.filter(opt => opt !== "Other");
+        }
+
+        if (columnId === 'color_mkzcn0h2') {
+            // Modality: the "both are fine" answer only applies school-wide.
+            options = options.filter(opt => String(opt).toLowerCase() !== 'both options are fine.');
+        }
+
+        // Everything else: keep NA / Other pinned to the bottom of the list.
+        const itemsToMoveToEnd = ['NA', 'Other'];
+        const regularItems = options.filter(opt => !itemsToMoveToEnd.includes(opt));
+        const specialItems = options.filter(opt => itemsToMoveToEnd.includes(opt));
+        return [...regularItems, ...specialItems];
+    }
+
+    /**
+     * Renders the contents of a scrollable multi-select panel.
+     * Values already selected on the subitem stay checked even if the
+     * label has since been removed from the Monday.com column, so an edit
+     * never silently drops data the school previously submitted.
+     */
+    function renderCheckboxOptions(columnId, selectedValues = []) {
+        const options = getSortedOptions(columnId);
+        const selected = Array.isArray(selectedValues) ? selectedValues.filter(Boolean) : [];
+
+        if (!options) {
+            // Options have not resolved yet (or the column returned nothing).
+            return `
+                <div class="flex justify-center items-center h-full text-slate-400 text-xs">
+                    <div class="loader"></div>
+                </div>
+            `;
+        }
+
+        const selSet = new Set(selected);
+        const orphaned = selected.filter(val => !options.includes(val));
+        const renderList = [...options, ...orphaned];
+
+        return renderList.map(name => `
+            <label class="checkbox-label flex items-start p-1.5 cursor-pointer transition-colors">
+                <span class="flex items-center h-4">
+                    <input type="checkbox" value="${escapeAttr(name)}" ${selSet.has(name) ? 'checked' : ''} class="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-brand-500 focus:ring-brand-500 focus:ring-2">
+                </span>
+                <span class="ml-2.5 text-xs text-slate-700 dark:text-slate-300 leading-4 select-none">${escapeHtml(name)}</span>
+            </label>
+        `).join('');
+    }
+
+    /**
+     * Builds one labelled, fixed-height, scrollable multi-select panel.
+     * All panels share the h-40 height so they align across the grid row.
+     */
+    function renderOptionPanel(field, data) {
+        const group = OPTION_GROUPS.find(g => g.field === field);
+        if (!group) return '';
+
+        return `
+            <div>
+                <div class="flex items-end justify-between h-8 mb-1 gap-2">
+                    <label class="block text-[11px] uppercase tracking-wide font-bold text-slate-500 dark:text-slate-400 leading-tight">${escapeHtml(group.label)}</label>
+                    <span data-count-for="${group.field}" class="text-[10px] font-semibold text-brand-600 dark:text-brand-300 whitespace-nowrap opacity-0 transition-opacity"></span>
+                </div>
+                <div data-checkbox-group="${group.field}" onchange="updateGroupCount(this)" class="checkbox-container rounded-xl p-2 h-40 overflow-y-auto">
+                    ${renderCheckboxOptions(group.columnId, data ? data[group.field] : [])}
+                </div>
+            </div>
+        `;
+    }
+
+    function renderSelectOptions(columnId, selectedValue = '') {
+        let html = '<option value="">Select Modality...</option>';
+        const options = getSortedOptions(columnId);
+
+        if (!options) {
+            html += '<option disabled>Loading...</option>';
+            return html;
+        }
+
+        // Preserve a value already saved on the subitem even if it is no
+        // longer an active label on the board.
+        const renderList = (selectedValue && !options.includes(selectedValue))
+            ? [...options, selectedValue]
+            : options;
+
+        renderList.forEach(name => {
+            const isSel = name === selectedValue ? 'selected' : '';
+            html += `<option value="${escapeAttr(name)}" ${isSel}>${escapeHtml(name)}</option>`;
+        });
+        return html;
+    }
+
+    /**
+     * Keeps the "n selected" badge above each panel in sync. Necessary
+     * because the panels scroll — checked options are often out of view.
+     */
+    function updateGroupCount(group) {
+        if (!group) return;
+        const groupName = group.getAttribute('data-checkbox-group');
+        const card = group.closest('.teacher-card');
+        if (!groupName || !card) return;
+
+        const badge = card.querySelector(`[data-count-for="${groupName}"]`);
+        if (!badge) return;
+
+        const count = group.querySelectorAll('input[type="checkbox"]:checked').length;
+        badge.textContent = count > 0 ? `${count} selected` : '';
+        badge.classList.toggle('opacity-0', count === 0);
+    }
+
+    // Refresh every badge in a card (used right after the card is built).
+    function refreshCardCounts(card) {
+        if (!card) return;
+        card.querySelectorAll('[data-checkbox-group]').forEach(updateGroupCount);
+    }
+
+    function toggleTBDMode(checked) {
+        isTBD = checked;
+        const tbdBox = document.getElementById('tbdDescriptionContainer');
+        const container = document.getElementById('teachersContainer');
+        const addBtn = document.getElementById('addTeacherBtnContainer');
+
+        if (checked) {
+            tbdBox.classList.remove('hidden');
+            container.classList.add('hidden');
+            addBtn.classList.add('hidden');
+        } else {
+            tbdBox.classList.add('hidden');
+            container.classList.remove('hidden');
+            addBtn.classList.remove('hidden');
+        }
+    }
+
+    // File input change listeners
+    function setupFileListeners() {
+        document.getElementById('calendar').addEventListener('change', function () {
+            const label = document.getElementById('calendarFileName');
+            if (this.files.length > 0) {
+                label.textContent = this.files[0].name;
+                label.className = "block text-xs text-brand-600 dark:text-brand-400 font-semibold mt-0.5";
+            }
+        });
+
+        document.getElementById('bellSchedule').addEventListener('change', function () {
+            const label = document.getElementById('bellScheduleFileName');
+            if (this.files.length > 0) {
+                label.textContent = this.files[0].name;
+                label.className = "block text-xs text-brand-600 dark:text-brand-400 font-semibold mt-0.5";
+            }
+        });
+    }
+
+    function handleTeacherFileChange(cardId, input) {
+        const label = document.getElementById(`teacherFileName_${cardId}`);
+        if (input.files.length > 0) {
+            label.textContent = input.files[0].name;
+            label.className = "text-brand-600 dark:text-brand-400 font-semibold";
+        }
+    }
+
+    /**
+     * Resets the school-level file pickers after a successful save.
+     * Without this, a second save in the same session re-uploads the same
+     * file and creates a duplicate in Drive. Teacher-level inputs are
+     * rebuilt with their cards, so they clear themselves.
+     */
+    function clearFileInputs() {
+        const calendarInput = document.getElementById('calendar');
+        const bellInput = document.getElementById('bellSchedule');
+
+        if (calendarInput) {
+            calendarInput.value = '';
+            const label = document.getElementById('calendarFileName');
+            label.textContent = 'PDF, DOC, DOCX up to 10MB';
+            label.className = "block text-xs text-slate-500 mt-0.5";
+        }
+
+        if (bellInput) {
+            bellInput.value = '';
+            const label = document.getElementById('bellScheduleFileName');
+            label.textContent = 'PDF, DOC, DOCX up to 10MB';
+            label.className = "block text-xs text-slate-500 mt-0.5";
+        }
+    }
+
+    /**
+     * Compares two multi-select selections and describes the delta.
+     * Returns null when nothing changed. Order is ignored — only
+     * membership matters, since Monday.com does not preserve label order.
+     */
+    function describeListChange(label, origList, currList) {
+        const before = Array.isArray(origList) ? origList.filter(Boolean) : [];
+        const after = Array.isArray(currList) ? currList.filter(Boolean) : [];
+
+        const beforeSet = new Set(before);
+        const afterSet = new Set(after);
+
+        const added = after.filter(v => !beforeSet.has(v));
+        const removed = before.filter(v => !afterSet.has(v));
+
+        if (added.length === 0 && removed.length === 0) return null;
+
+        const parts = [];
+        if (added.length > 0) parts.push(`+${escapeHtml(added.join(', '))}`);
+        if (removed.length > 0) parts.push(`−${escapeHtml(removed.join(', '))}`);
+
+        return `${escapeHtml(label)} (${parts.join(' / ')})`;
+    }
+
+    // Detailed Change Detection & Summary Generator
+    function generateChangesSummary() {
+        const origSchool = (originalInquiryData && originalInquiryData.schoolData) ? originalInquiryData.schoolData : {};
+        const parentChanges = [];
+
+        const currSchoolName = document.getElementById('schoolName').value.trim();
+        if (currSchoolName !== (origSchool.schoolName || '').trim()) {
+            parentChanges.push(`<strong>School Name:</strong> "${escapeHtml(origSchool.schoolName || '')}" ➔ "${escapeHtml(currSchoolName)}"`);
+        }
+
+        const currAddress = document.getElementById('address').value.trim();
+        if (currAddress !== (origSchool.address || '').trim()) {
+            parentChanges.push(`<strong>School Address:</strong> "${escapeHtml(origSchool.address || '')}" ➔ "${escapeHtml(currAddress)}"`);
+        }
+
+        const currFullName = document.getElementById('fullName').value.trim();
+        if (currFullName !== (origSchool.fullName || '').trim()) {
+            parentChanges.push(`<strong>Contact Name:</strong> "${escapeHtml(origSchool.fullName || '')}" ➔ "${escapeHtml(currFullName)}"`);
+        }
+
+        const currEmail = document.getElementById('email').value.trim();
+        if (currEmail !== (origSchool.email || '').trim()) {
+            parentChanges.push(`<strong>Contact Email:</strong> "${escapeHtml(origSchool.email || '')}" ➔ "${escapeHtml(currEmail)}"`);
+        }
+
+        const currPhone = document.getElementById('phone').value.trim();
+        if (currPhone !== (origSchool.phone || '').trim()) {
+            parentChanges.push(`<strong>Contact Phone:</strong> "${escapeHtml(origSchool.phone || '')}" ➔ "${escapeHtml(currPhone)}"`);
+        }
+
+        const currCert = document.getElementById('certification') ? document.getElementById('certification').value : '';
+        if (currCert !== (origSchool.certification || '')) {
+            parentChanges.push(`<strong>Certification:</strong> "${escapeHtml(origSchool.certification || 'None')}" ➔ "${escapeHtml(currCert || 'None')}"`);
+        }
+
+        const currCalText = document.getElementById('calendarText').value.trim();
+        if (currCalText !== (origSchool.calendarText || '').trim()) {
+            parentChanges.push(`<strong>School Calendar Text:</strong> Description updated`);
+        }
+
+        const calFile = document.getElementById('calendar');
+        if (calFile && calFile.files.length > 0) {
+            parentChanges.push(`<strong>School Calendar File:</strong> 📁 New file (${escapeHtml(calFile.files[0].name)})`);
+        }
+
+        const currBellText = document.getElementById('bellScheduleText').value.trim();
+        if (currBellText !== (origSchool.bellScheduleText || '').trim()) {
+            parentChanges.push(`<strong>Bell Schedule Text:</strong> Description updated`);
+        }
+
+        const bellFile = document.getElementById('bellSchedule');
+        if (bellFile && bellFile.files.length > 0) {
+            parentChanges.push(`<strong>Bell Schedule File:</strong> 📁 New file (${escapeHtml(bellFile.files[0].name)})`);
+        }
+
+        const currNotes = document.getElementById('additionalInfo').value.trim();
+        if (currNotes !== (origSchool.additionalInfo || '').trim()) {
+            parentChanges.push(`<strong>Additional Notes:</strong> Description updated`);
+        }
+
+        let parentHtml = '';
+        if (parentChanges.length > 0) {
+            parentHtml = parentChanges.map(c => `
+                <li class="flex items-start space-x-2">
+                    <i class="fa-solid fa-pen text-brand-500 mt-0.5 text-[10px]"></i>
+                    <span>${c}</span>
+                </li>
+            `).join('');
+        } else {
+            parentHtml = `<li class="text-slate-400 dark:text-slate-500 italic flex items-center space-x-1.5"><i class="fa-solid fa-check text-emerald-500 text-[10px]"></i><span>No changes to School & Contact Details</span></li>`;
+        }
+
+        // Counts only genuine edits, so a no-op save can be skipped entirely
+        // rather than rewriting every column and regenerating the PDF.
+        let changeCount = parentChanges.length;
+
+        // Subitems / Teachers logic
+        const teacherChanges = [];
+        const origTeachers = (originalInquiryData && originalInquiryData.teachers) ? originalInquiryData.teachers : [];
+        const origMap = {};
+        origTeachers.forEach(t => { origMap[t.subitemId] = t; });
+
+        if (isTBD) {
+            const tbdDesc = document.getElementById('tbdDescription').value.trim();
+            if (tbdDesc !== (origSchool.numberOfTeachers || '').trim()) changeCount++;
+            teacherChanges.push(`
+                <div class="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs">
+                    <div class="font-bold flex items-center space-x-1.5 mb-1"><i class="fa-solid fa-clock"></i><span>Staffing Set to TBD Mode</span></div>
+                    <div class="text-slate-600 dark:text-slate-400">${escapeHtml(tbdDesc || 'Details pending...')}</div>
+                </div>
+            `);
+        } else {
+            const teacherCards = document.querySelectorAll('.teacher-card');
+            teacherCards.forEach(card => {
+                const cardId = card.getAttribute('data-card-id');
+                const subitemId = card.getAttribute('data-subitem-id');
+                const name = card.querySelector('[data-field="name"]').value.trim();
+                const schedFileInput = document.getElementById(`teacherSchedule_${cardId}`);
+                const fileAttached = schedFileInput && schedFileInput.files.length > 0;
+
+                if (!subitemId) {
+                    // New Position
+                    changeCount++;
+                    teacherChanges.push(`
+                        <div class="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs space-y-1">
+                            <div class="font-bold flex items-center justify-between">
+                                <span class="flex items-center space-x-1.5"><i class="fa-solid fa-plus-circle text-emerald-600 dark:text-emerald-400"></i><span>New Position: "${escapeHtml(name || 'Untitled')}"</span></span>
+                                <span class="bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 px-2 py-0.5 rounded font-bold text-[10px]">NEW</span>
+                            </div>
+                            ${fileAttached ? `<div class="text-slate-600 dark:text-slate-400 text-[11px]">📁 Schedule file attached: <strong>${escapeHtml(schedFileInput.files[0].name)}</strong></div>` : ''}
+                        </div>
+                    `);
+                } else {
+                    // Existing Position
+                    const orig = origMap[subitemId] || {};
+                    const modifiedFields = [];
+
+                    if (name !== (orig.name || '').trim()) modifiedFields.push(`Title ("${escapeHtml(orig.name || '')}" ➔ "${escapeHtml(name)}")`);
+                    if (card.querySelector('[data-field="campusName"]').value.trim() !== (orig.campusName || '').trim()) modifiedFields.push('Campus Name');
+                    if (card.querySelector('[data-field="campusAddress"]').value.trim() !== (orig.campusAddress || '').trim()) modifiedFields.push('Campus Address');
+                    if (card.querySelector('[data-field="annualSalary"]').value.trim() !== (orig.annualSalary || '').trim()) modifiedFields.push('Annual Salary');
+                    if (card.querySelector('[data-field="proratedSalary"]').value.trim() !== (orig.proratedSalary || '').trim()) modifiedFields.push('Prorated Salary');
+                    if (card.querySelector('[data-field="startDate"]').value !== (orig.startDate || '')) modifiedFields.push('Start Date');
+                    if (card.querySelector('[data-field="lastDay"]').value !== (orig.lastDay || '')) modifiedFields.push('End Date');
+                    if (card.querySelector('[data-field="description"]').value.trim() !== (orig.description || '').trim()) modifiedFields.push('Requirements');
+                    if (card.querySelector('[data-field="duties"]').value.trim() !== (orig.duties || '').trim()) modifiedFields.push('Duties');
+                    if (card.querySelector('[data-field="teachingSchedule"]').value.trim() !== (orig.teachingSchedule || '').trim()) modifiedFields.push('Schedule Description');
+
+                    const currModality = card.querySelector('[data-field="modality"]').value;
+                    if (currModality !== (orig.modality || '')) {
+                        modifiedFields.push(`Modality ("${escapeHtml(orig.modality || 'None')}" ➔ "${escapeHtml(currModality || 'None')}")`);
+                    }
+
+                    // Multi-select option panels
+                    OPTION_GROUPS.forEach(group => {
+                        const change = describeListChange(
+                            group.label,
+                            orig[group.field],
+                            getCheckedValues(card, group.field)
+                        );
+                        if (change) modifiedFields.push(change);
+                    });
+
+                    if (fileAttached) modifiedFields.push(`📁 New Schedule File (${escapeHtml(schedFileInput.files[0].name)})`);
+
+                    if (modifiedFields.length > 0) {
+                        changeCount++;
+                        teacherChanges.push(`
+                            <div class="p-3 rounded-xl bg-blue-50 dark:bg-slate-800/80 border border-blue-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs space-y-1">
+                                <div class="font-bold flex items-center justify-between text-blue-900 dark:text-blue-300">
+                                    <span class="flex items-center space-x-1.5"><i class="fa-solid fa-pen-to-square text-blue-600 dark:text-blue-400"></i><span>Updated: "${escapeHtml(name || orig.name || 'Subitem')}"</span></span>
+                                    <span class="font-mono text-[11px] text-slate-500 dark:text-slate-400">#${subitemId}</span>
+                                </div>
+                                <div class="text-[11px] text-slate-600 dark:text-slate-300 pl-3 border-l-2 border-blue-400 space-y-0.5">
+                                    ${modifiedFields.map(f => `<div>• ${f}</div>`).join('')}
+                                </div>
+                            </div>
+                        `);
+                    } else {
+                        teacherChanges.push(`
+                            <div class="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-xs flex items-center justify-between">
+                                <span class="flex items-center space-x-1.5"><i class="fa-solid fa-check text-slate-400 text-[10px]"></i><span>No changes to "${escapeHtml(name || orig.name || 'Subitem')}"</span></span>
+                                <span class="font-mono text-[11px]">#${subitemId}</span>
+                            </div>
+                        `);
+                    }
+                }
+            });
+
+            // Deleted subitems
+            deletedSubitemIds.forEach(delId => {
+                changeCount++;
+                const orig = origMap[delId] || {};
+                const delName = orig.name ? `"${escapeHtml(orig.name)}"` : `Subitem #${delId}`;
+                teacherChanges.push(`
+                    <div class="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-900 dark:text-red-200 text-xs font-semibold flex items-center justify-between">
+                        <span class="flex items-center space-x-1.5"><i class="fa-solid fa-trash-can text-red-500"></i><span>Deleting Position: ${delName}</span></span>
+                        <span class="font-mono text-[11px] text-red-600 dark:text-red-400">#${delId}</span>
+                    </div>
+                `);
+            });
+        }
+
+        return {
+            parentHtml: parentHtml,
+            teacherHtml: teacherChanges.join(''),
+            changeCount: changeCount
+        };
+    }
+
+    // Preview Modal Logic
+    function openPreviewModal() {
+        const form = document.getElementById('inquiryForm');
+        if (!form.checkValidity()) {
+            form.reportValidity();
+            return;
+        }
+
+        const schoolName = document.getElementById('schoolName').value;
+        const summary = generateChangesSummary();
+
+        const noChanges = summary.changeCount === 0;
+
+        let html = `
+            <div class="p-4 rounded-xl bg-brand-50 dark:bg-slate-800 border border-brand-200 dark:border-slate-700 space-y-1">
+                <div class="font-bold text-slate-900 dark:text-white text-base">${escapeHtml(schoolName)}</div>
+                <div class="text-xs text-slate-500 dark:text-slate-400">Monday.com Parent Item ID: <span class="font-mono font-semibold text-brand-700 dark:text-brand-300">${currentItemId || 'N/A'}</span></div>
+            </div>
+
+            ${noChanges ? `
+                <div class="p-3.5 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 space-y-1">
+                    <div class="font-bold text-slate-800 dark:text-slate-100 flex items-center space-x-1.5">
+                        <i class="fa-solid fa-circle-check text-emerald-500"></i><span>Nothing to save</span>
+                    </div>
+                    <div>This inquiry is unchanged, so there is no need to write to Monday.com — saving anyway would rewrite every column and generate a duplicate PDF.</div>
+                    <div class="pt-0.5">You can still push these teacher positions to a New Contract or Renewal.</div>
+                </div>
+            ` : ''}
+
+            <div class="space-y-4 pt-1">
+                <!-- Parent Item Section -->
+                <div class="space-y-2">
+                    <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-wider flex items-center space-x-2 border-b border-slate-200 dark:border-slate-700 pb-1.5">
+                        <i class="fa-solid fa-school text-brand-600 dark:text-brand-300"></i>
+                        <span>School & Contact Details</span>
+                    </h4>
+                    <ul class="text-xs space-y-1.5 text-slate-700 dark:text-slate-300 pl-1">
+                        ${summary.parentHtml}
+                    </ul>
+                </div>
+
+                <!-- Teacher Positions Section -->
+                <div class="space-y-2">
+                    <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-wider flex items-center space-x-2 border-b border-slate-200 dark:border-slate-700 pb-1.5">
+                        <i class="fa-solid fa-users-rectangle text-brand-600 dark:text-brand-300"></i>
+                        <span>Teacher Staffing Positions</span>
+                    </h4>
+                    <div class="space-y-2">
+                        ${summary.teacherHtml}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('previewContent').innerHTML = html;
+
+        // With no edits to write, the primary action skips the save and goes
+        // straight to the contract step.
+        const confirmBtn = document.getElementById('previewConfirmBtn');
+        confirmBtn.textContent = noChanges
+            ? 'Continue to Contract Update'
+            : 'Confirm & Update the PIF';
+        confirmBtn.setAttribute('data-no-changes', noChanges ? 'true' : 'false');
+
+        document.getElementById('previewModal').classList.remove('hidden');
+    }
+
+    /**
+     * Preview modal primary action. Skips the Monday.com write entirely when
+     * nothing changed, since processUpdateApplication rewrites every column
+     * and regenerates the summary PDF on each run.
+     */
+    function confirmPreviewAction() {
+        const skipSave = document.getElementById('previewConfirmBtn').getAttribute('data-no-changes') === 'true';
+
+        if (skipSave) {
+            closePreviewModal();
+            openContractSyncModal(false);
+            return;
+        }
+
+        submitUpdates();
+    }
+
+    function closePreviewModal() {
+        document.getElementById('previewModal').classList.add('hidden');
+    }
+
+    // Submit Updates Handler
+    async function submitUpdates() {
+        closePreviewModal();
+        showLoadingOverlay("Saving Updates", "Syncing changes with Monday.com and Drive...");
+
+        try {
+            const schoolData = {
+                schoolName: document.getElementById('schoolName').value,
+                address: document.getElementById('address').value,
+                fullName: document.getElementById('fullName').value,
+                email: document.getElementById('email').value,
+                phone: document.getElementById('phone').value,
+                certification: document.getElementById('certification').value,
+                calendarText: document.getElementById('calendarText').value,
+                bellScheduleText: document.getElementById('bellScheduleText').value,
+                additionalInfo: document.getElementById('additionalInfo').value,
+                numberOfTeachers: isTBD ? (document.getElementById('tbdDescription').value || 'Staffing TBD') : `${document.querySelectorAll('.teacher-card').length} Teacher(s)`
+            };
+
+            // Process calendar file upload if new file selected
+            const calFile = document.getElementById('calendar').files[0];
+            if (calFile) {
+                schoolData.calendarFileData = await fileToBase64(calFile);
+                schoolData.calendarFileName = calFile.name;
+                schoolData.calendarMimeType = calFile.type;
+            }
+
+            // Process bell schedule file upload if new file selected
+            const bellFile = document.getElementById('bellSchedule').files[0];
+            if (bellFile) {
+                schoolData.bellScheduleFileData = await fileToBase64(bellFile);
+                schoolData.bellScheduleFileName = bellFile.name;
+                schoolData.bellScheduleMimeType = bellFile.type;
+            }
+
+            // Gather teacher cards
+            const teachers = [];
+            if (!isTBD) {
+                const cardEls = document.querySelectorAll('.teacher-card');
+                for (const card of cardEls) {
+                    const cardId = card.getAttribute('data-card-id');
+                    const subitemId = card.getAttribute('data-subitem-id') || '';
+
+                    const teacher = {
+                        subitemId: subitemId,
+                        name: card.querySelector('[data-field="name"]').value,
+                        campusName: card.querySelector('[data-field="campusName"]').value,
+                        campusAddress: card.querySelector('[data-field="campusAddress"]').value,
+                        description: card.querySelector('[data-field="description"]').value,
+                        teachingSchedule: card.querySelector('[data-field="teachingSchedule"]').value,
+                        duties: card.querySelector('[data-field="duties"]').value,
+                        annualSalary: card.querySelector('[data-field="annualSalary"]').value,
+                        proratedSalary: card.querySelector('[data-field="proratedSalary"]').value,
+                        startDate: card.querySelector('[data-field="startDate"]').value,
+                        lastDay: card.querySelector('[data-field="lastDay"]').value,
+                        instructionalDays: String(calculateDaysBetween(
+                            card.querySelector('[data-field="startDate"]').value,
+                            card.querySelector('[data-field="lastDay"]').value
+                        )),
+                        modality: card.querySelector('[data-field="modality"]').value,
+                        gradeLevels: getCheckedValues(card, 'gradeLevels'),
+                        languageAcquisition: getCheckedValues(card, 'languageAcquisition'),
+                        stem: getCheckedValues(card, 'stem'),
+                        humanities: getCheckedValues(card, 'humanities'),
+                        sped: getCheckedValues(card, 'sped'),
+                        paraprofessional: getCheckedValues(card, 'paraprofessional'),
+                        languages: getCheckedValues(card, 'languages'),
+                        cte: getCheckedValues(card, 'cte')
+                    };
+
+                    const fileInput = document.getElementById(`teacherSchedule_${cardId}`);
+                    if (fileInput && fileInput.files.length > 0) {
+                        const tFile = fileInput.files[0];
+                        teacher.teachingScheduleFileData = await fileToBase64(tFile);
+                        teacher.teachingScheduleFileName = tFile.name;
+                        teacher.teachingScheduleMimeType = tFile.type;
+                    }
+
+                    teachers.push(teacher);
+                }
+            }
+
+            const payload = {
+                itemId: currentItemId,
+                schoolData: schoolData,
+                teachers: teachers,
+                deletedSubitemIds: deletedSubitemIds,
+                clientMeta: clientMeta()
+            };
+
+            google.script.run
+                .withSuccessHandler(res => {
+                    hideLoadingOverlay();
+                    if (res && res.success) {
+                        // Those subitems are gone on Monday.com now; clear the
+                        // queue so a second save does not re-issue the deletes
+                        // or keep listing them in the change preview.
+                        deletedSubitemIds = [];
+                        clearFileInputs();
+
+                        // The PIF is saved and every teacher now has a subitem
+                        // ID, so the contract sync has something to map against.
+                        openContractSyncModal();
+                    } else {
+                        alert(res ? res.message : "Error saving updates.");
+                    }
+                })
+                .withFailureHandler(err => {
+                    hideLoadingOverlay();
+                    handleError(err);
+                })
+                .processUpdateApplication(payload);
+
+        } catch (err) {
+            hideLoadingOverlay();
+            alert("File processing error: " + err.toString());
+        }
+    }
+
+    function getCheckedValues(container, groupName) {
+        const group = container.querySelector(`[data-checkbox-group="${groupName}"]`);
+        if (!group) return [];
+        const checked = group.querySelectorAll('input[type="checkbox"]:checked');
+        return Array.from(checked).map(c => c.value);
+    }
+
+    function fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = error => reject(error);
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // UI Overlay Helpers
+    function showLoadingOverlay(title, msg) {
+        document.getElementById('loadingTitle').textContent = title;
+        document.getElementById('loadingMessage').textContent = msg;
+        document.getElementById('loadingOverlay').classList.remove('hidden');
+    }
+
+    function hideLoadingOverlay() {
+        document.getElementById('loadingOverlay').classList.add('hidden');
+    }
+
+    function handleError(err) {
+        console.error("GAS Execution Error:", err);
+        alert("Server Error: " + (err.message || err.toString()));
+    }
+
+    // Theme Management
+    function initTheme() {
+        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+            document.getElementById('themeIcon').className = "fa-solid fa-sun";
+        } else {
+            document.documentElement.classList.remove('dark');
+            document.getElementById('themeIcon').className = "fa-solid fa-moon";
+        }
+    }
+
+    function toggleTheme() {
+        if (document.documentElement.classList.contains('dark')) {
+            document.documentElement.classList.remove('dark');
+            localStorage.theme = 'light';
+            document.getElementById('themeIcon').className = "fa-solid fa-moon";
+        } else {
+            document.documentElement.classList.add('dark');
+            localStorage.theme = 'dark';
+            document.getElementById('themeIcon').className = "fa-solid fa-sun";
+        }
+    }
+
+    // ====================================================================
+    // CONTRACT / RENEWAL SYNC
+    // Runs after the PIF save succeeds. Step 1 picks the target item,
+    // step 2 maps PIF teachers onto that item's subitems, step 3 commits.
+    // ====================================================================
+
+    let contractSync = {
+        step: 'targets',
+        targets: null,
+        selectedTargetKey: '',
+        selectedTargetItemId: '',
+        plan: null
+    };
+
+    // Whether this run actually wrote the PIF, so the banner can be honest.
+    let contractSyncDidSave = true;
+
+    /**
+     * @param {boolean} saved - false when the PIF write was skipped because
+     *   nothing had changed, so the banner does not claim a save happened.
+     */
+    function openContractSyncModal(saved) {
+        contractSyncDidSave = saved !== false;
+
+        contractSync = {
+            step: 'targets',
+            targets: null,
+            selectedTargetKey: '',
+            selectedTargetItemId: '',
+            plan: null,
+            manual: null,
+            manualItems: []
+        };
+
+        document.getElementById('contractSyncModal').classList.remove('hidden');
+        document.getElementById('contractSyncBackBtn').classList.add('hidden');
+        document.getElementById('contractSyncSkipBtn').textContent = 'Skip for now';
+        document.getElementById('contractSyncSubtitle').textContent = contractSyncDidSave
+            ? 'Changes to this inquiry have been saved.'
+            : 'This inquiry had no changes to save.';
+        setContractSyncBody(`
+            <div class="flex flex-col items-center justify-center py-10 space-y-3">
+                <div class="loader"></div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Looking for linked New Contract or Renewal items...</p>
+            </div>
+        `);
+        setContractSyncPrimary('Continue', true);
+
+        google.script.run
+            .withSuccessHandler(renderContractTargets)
+            .withFailureHandler(err => {
+                renderContractSyncError(err && err.message ? err.message : String(err));
+            })
+            .findContractTargets(currentItemId);
+    }
+
+    function closeContractSyncModal() {
+        document.getElementById('contractSyncModal').classList.add('hidden');
+        // The PIF itself was already saved; refresh so the form reflects
+        // whatever Monday.com now holds.
+        if (currentItemId) loadInquiryData(currentItemId);
+    }
+
+    function setContractSyncBody(html) {
+        document.getElementById('contractSyncBody').innerHTML = html;
+    }
+
+    function setContractSyncPrimary(label, disabled) {
+        const btn = document.getElementById('contractSyncPrimaryBtn');
+        btn.textContent = label;
+        btn.disabled = !!disabled;
+        btn.classList.toggle('hidden', label === '');
+    }
+
+    function renderContractSyncError(message) {
+        document.getElementById('contractSyncBackBtn').classList.add('hidden');
+        setContractSyncBody(`
+            <div class="p-4 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-900 dark:text-red-200 text-xs">
+                <div class="font-bold flex items-center space-x-1.5 mb-1">
+                    <i class="fa-solid fa-triangle-exclamation"></i><span>Could not complete</span>
+                </div>
+                <div>${escapeHtml(message)}</div>
+            </div>
+        `);
+        setContractSyncPrimary('', true);
+    }
+
+    // ----- Step 1: choose the target item -----
+
+    function renderContractTargets(response) {
+        if (!response || !response.success) {
+            renderContractSyncError(response ? response.message : 'Failed to look up linked items.');
+            return;
+        }
+
+        contractSync.targets = response;
+
+        const excluded = response.excluded || [];
+
+        if (!response.candidates || response.candidates.length === 0) {
+            let reason;
+            if (excluded.length > 0) {
+                reason = `The only linked item${excluded.length > 1 ? 's are' : ' is'} already closed out, so ${excluded.length > 1 ? 'they are' : 'it is'} not offered here.`;
+            } else if (response.leadMissing) {
+                reason = 'This inquiry has no Lead ID set, so no New Contract could be matched, and no Renewal links back to it.';
+            } else {
+                reason = 'No open New Contract or Renewal item is linked to this inquiry.';
+            }
+
+            setContractSyncBody(`
+                <div class="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs space-y-1">
+                    <div class="font-bold flex items-center space-x-1.5">
+                        <i class="fa-solid fa-circle-info"></i><span>No linked item found</span>
+                    </div>
+                    <div>${escapeHtml(reason)}</div>
+                    <div class="text-slate-600 dark:text-slate-400 pt-1">${contractSyncDidSave
+                        ? 'Your inquiry changes were saved successfully.'
+                        : 'The inquiry itself was unchanged, so nothing was written.'}</div>
+                </div>
+                ${renderManualEntryPoint(false)}
+                ${renderExcludedList(excluded)}
+                ${renderSyncDiagnostics(response.diagnostics)}
+            `);
+            setContractSyncPrimary('', true);
+            return;
+        }
+
+        const rows = response.candidates.map((candidate, index) => {
+            const isNew = candidate.targetKey === 'new_contract';
+            const badge = isNew
+                ? 'bg-brand-50 dark:bg-slate-800 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-slate-700'
+                : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
+
+            return `
+                <label class="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-brand-500 cursor-pointer transition-colors bg-white/60 dark:bg-slate-800/40">
+                    <input type="radio" name="contractTarget" value="${index}" onchange="selectContractTarget(${index})" class="mt-1 w-4 h-4 text-brand-500 focus:ring-brand-500">
+                    <span class="flex-1 min-w-0">
+                        <span class="flex items-center gap-2 flex-wrap">
+                            <span class="text-xs font-bold px-2 py-0.5 rounded-md border ${badge}">${escapeHtml(candidate.targetLabel)}</span>
+                            <span class="font-semibold text-slate-900 dark:text-white text-sm truncate">${escapeHtml(candidate.name || 'Untitled item')}</span>
+                        </span>
+                        <span class="flex items-center gap-2 mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                            <i class="fa-solid fa-layer-group"></i>
+                            <span>Group: <strong>${escapeHtml(candidate.groupTitle || 'Unknown')}</strong></span>
+                            <span class="font-mono">#${escapeHtml(candidate.itemId)}</span>
+                        </span>
+                    </span>
+                </label>
+            `;
+        }).join('');
+
+        setContractSyncBody(`
+            <div class="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 text-xs flex items-center space-x-2">
+                <i class="fa-solid fa-circle-check"></i>
+                <span>${contractSyncDidSave
+                    ? 'Inquiry saved. Optionally push these teacher positions to a contract.'
+                    : 'Inquiry unchanged — nothing was written. You can still push these teacher positions to a contract.'}</span>
+            </div>
+            <div class="space-y-2">
+                <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-wider border-b border-slate-200 dark:border-slate-700 pb-1.5">
+                    Which item should be updated?
+                </h4>
+                <div class="space-y-2 pt-1">${rows}</div>
+            </div>
+            ${renderManualEntryPoint(true)}
+            ${renderExcludedList(excluded)}
+            ${renderSyncDiagnostics(response.diagnostics)}
+        `);
+        setContractSyncPrimary('Continue', true);
+    }
+
+    /**
+     * Escape hatch from automatic discovery — lets the user name the board
+     * themselves, whether nothing was found or the found item is wrong.
+     */
+    function renderManualEntryPoint(hasCandidates) {
+        const heading = hasCandidates
+            ? "Not the right item?"
+            : "Know which item to update?";
+        const detail = hasCandidates
+            ? "Browse New Contract or Renewal items directly and pick one yourself."
+            : "Pick the New Contract or Renewal item yourself from the Won or Pending groups.";
+
+        return `
+            <button type="button" onclick="startManualTargetPick()"
+                class="w-full mt-1 p-3.5 rounded-xl border-2 border-dashed border-brand-400/70 dark:border-brand-500/60 hover:border-brand-500 hover:bg-brand-50 dark:hover:bg-slate-800/70 bg-white/50 dark:bg-slate-800/30 text-left transition-colors group">
+                <span class="flex items-center gap-3">
+                    <span class="w-8 h-8 shrink-0 rounded-lg bg-brand-500/10 dark:bg-brand-500/20 text-brand-600 dark:text-brand-300 flex items-center justify-center">
+                        <i class="fa-solid fa-hand-pointer text-sm"></i>
+                    </span>
+                    <span class="min-w-0">
+                        <span class="block font-bold text-brand-700 dark:text-brand-300 text-sm">${escapeHtml(heading)} Choose manually</span>
+                        <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">${escapeHtml(detail)}</span>
+                    </span>
+                    <i class="fa-solid fa-chevron-right text-xs text-slate-400 ml-auto group-hover:text-brand-500 transition-colors"></i>
+                </span>
+            </button>
+        `;
+    }
+
+    // ----- Step 1b: manual target designation -----
+
+    function startManualTargetPick() {
+        contractSync.step = 'manual-board';
+        document.getElementById('contractSyncBackBtn').classList.remove('hidden');
+
+        setContractSyncBody(`
+            <div class="space-y-2">
+                <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-wider border-b border-slate-200 dark:border-slate-700 pb-1.5">
+                    Which board are you updating?
+                </h4>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <button type="button" onclick="loadManualTargets('new_contract')" class="p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-brand-500 bg-white/60 dark:bg-slate-800/40 text-left transition-colors">
+                        <div class="font-bold text-slate-900 dark:text-white text-sm">New Contract</div>
+                        <div class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Subject and grade columns are written directly.</div>
+                    </button>
+                    <button type="button" onclick="loadManualTargets('renewal')" class="p-4 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-brand-500 bg-white/60 dark:bg-slate-800/40 text-left transition-colors">
+                        <div class="font-bold text-slate-900 dark:text-white text-sm">Renewal</div>
+                        <div class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Fields mirror through the linked inquiry subitem.</div>
+                    </button>
+                </div>
+                <p class="text-[11px] text-slate-400 dark:text-slate-500 pt-1">Only items in Won or Pending groups are listed.</p>
+            </div>
+        `);
+        setContractSyncPrimary('', true);
+    }
+
+    function loadManualTargets(targetKey) {
+        setContractSyncBody(`
+            <div class="flex flex-col items-center justify-center py-10 space-y-3">
+                <div class="loader"></div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Loading items...</p>
+            </div>
+        `);
+
+        google.script.run
+            .withSuccessHandler(renderManualTargets)
+            .withFailureHandler(err => {
+                renderContractSyncError(err && err.message ? err.message : String(err));
+            })
+            .listManualTargets(targetKey);
+    }
+
+    function renderManualTargets(response) {
+        if (!response || !response.success) {
+            renderContractSyncError(response ? response.message : 'Failed to load items.');
+            return;
+        }
+
+        contractSync.step = 'manual-item';
+        contractSync.manual = response;
+
+        const allItems = [];
+        (response.groups || []).forEach(group => {
+            group.items.forEach(item => {
+                allItems.push({ ...item, groupTitle: group.groupTitle });
+            });
+        });
+
+        if (allItems.length === 0) {
+            setContractSyncBody(`
+                <div class="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs">
+                    No ${escapeHtml(response.targetLabel)} items were found in a Won or Pending group.
+                </div>
+            `);
+            setContractSyncPrimary('', true);
+            return;
+        }
+
+        contractSync.manualItems = allItems;
+        const truncated = (response.groups || []).some(g => g.truncated);
+
+        setContractSyncBody(`
+            <div class="space-y-2">
+                <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-wider border-b border-slate-200 dark:border-slate-700 pb-1.5">
+                    Select the ${escapeHtml(response.targetLabel)} item
+                </h4>
+                <input type="text" id="manualTargetSearch" oninput="filterManualTargets()" placeholder="Search by name..." class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-brand-500 outline-none">
+                <div id="manualTargetList" class="space-y-2 pt-1 max-h-72 overflow-y-auto"></div>
+                ${truncated ? `<p class="text-[11px] text-amber-700 dark:text-amber-400">Only the first 200 items per group are listed — use the search box if you don't see yours.</p>` : ''}
+            </div>
+        `);
+        setContractSyncPrimary('Continue', true);
+        filterManualTargets();
+    }
+
+    function filterManualTargets() {
+        const input = document.getElementById('manualTargetSearch');
+        const term = (input ? input.value : '').trim().toLowerCase();
+        const list = document.getElementById('manualTargetList');
+        if (!list) return;
+
+        const matches = contractSync.manualItems.filter(item =>
+            !term || item.name.toLowerCase().includes(term)
+        ).slice(0, 100);
+
+        if (matches.length === 0) {
+            list.innerHTML = `<p class="text-[11px] text-slate-500 dark:text-slate-400 py-3 text-center">No items match "${escapeHtml(term)}".</p>`;
+            return;
+        }
+
+        list.innerHTML = matches.map(item => `
+            <label class="flex items-start gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-brand-500 cursor-pointer transition-colors bg-white/60 dark:bg-slate-800/40">
+                <input type="radio" name="manualTarget" value="${escapeAttr(item.itemId)}" onchange="selectManualTarget('${escapeAttr(item.itemId)}')" class="mt-0.5 w-4 h-4 text-brand-500 focus:ring-brand-500">
+                <span class="flex-1 min-w-0">
+                    <span class="block font-semibold text-slate-900 dark:text-white text-sm truncate">${escapeHtml(item.name || 'Untitled')}</span>
+                    <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        ${escapeHtml(item.groupTitle)} &middot; <span class="font-mono">#${escapeHtml(item.itemId)}</span>
+                    </span>
+                </span>
+            </label>
+        `).join('');
+    }
+
+    function selectManualTarget(itemId) {
+        contractSync.selectedTargetKey = contractSync.manual.targetKey;
+        contractSync.selectedTargetItemId = itemId;
+        setContractSyncPrimary('Continue', false);
+    }
+
+    /**
+     * Closed-out items are never selectable, but showing them stops the user
+     * wondering whether the lookup simply missed something.
+     */
+    function renderExcludedList(excluded) {
+        if (!excluded || excluded.length === 0) return '';
+
+        const rows = excluded.map(item => `
+            <li class="flex items-center justify-between gap-2">
+                <span class="truncate">
+                    <span class="font-semibold">${escapeHtml(item.targetLabel)}</span> —
+                    ${escapeHtml(item.name || 'Untitled')}
+                </span>
+                <span class="whitespace-nowrap text-slate-400 dark:text-slate-500">${escapeHtml(item.groupTitle)}</span>
+            </li>
+        `).join('');
+
+        return `
+            <div class="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-500 dark:text-slate-400 space-y-1.5">
+                <div class="font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                    <i class="fa-solid fa-ban text-[10px]"></i>
+                    <span>Not offered — already closed out</span>
+                </div>
+                <ul class="space-y-1">${rows}</ul>
+            </div>
+        `;
+    }
+
+    /**
+     * Collapsed detail of which lookups ran and what they returned. Makes a
+     * missing candidate diagnosable without digging through server logs.
+     */
+    function renderSyncDiagnostics(diagnostics) {
+        if (!diagnostics || diagnostics.length === 0) return '';
+
+        const lines = diagnostics.map(line => `<li>${escapeHtml(line)}</li>`).join('');
+        return `
+            <details class="text-[11px] text-slate-500 dark:text-slate-400">
+                <summary class="cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 select-none">How were these results found?</summary>
+                <ul class="mt-1.5 pl-4 list-disc space-y-0.5">${lines}</ul>
+            </details>
+        `;
+    }
+
+    function selectContractTarget(index) {
+        const candidate = contractSync.targets.candidates[index];
+        if (!candidate) return;
+        contractSync.selectedTargetKey = candidate.targetKey;
+        contractSync.selectedTargetItemId = candidate.itemId;
+        setContractSyncPrimary('Continue', false);
+    }
+
+    // ----- Step 2: map PIF teachers onto target subitems -----
+
+    function loadContractSyncPlan() {
+        setContractSyncBody(`
+            <div class="flex flex-col items-center justify-center py-10 space-y-3">
+                <div class="loader"></div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Matching teachers to existing subitems...</p>
+            </div>
+        `);
+        setContractSyncPrimary('Continue', true);
+
+        google.script.run
+            .withSuccessHandler(renderContractPlan)
+            .withFailureHandler(err => {
+                renderContractSyncError(err && err.message ? err.message : String(err));
+            })
+            .getContractSyncPlan(currentItemId, contractSync.selectedTargetKey, contractSync.selectedTargetItemId);
+    }
+
+    function renderContractPlan(plan) {
+        if (!plan || !plan.success) {
+            renderContractSyncError(plan ? plan.message : 'Failed to build the sync plan.');
+            return;
+        }
+
+        contractSync.plan = plan;
+        contractSync.step = 'mapping';
+        document.getElementById('contractSyncBackBtn').classList.remove('hidden');
+
+        if (!plan.rows || plan.rows.length === 0) {
+            setContractSyncBody(`
+                <div class="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs">
+                    This inquiry has no teacher positions to push.
+                </div>
+            `);
+            setContractSyncPrimary('', true);
+            return;
+        }
+
+        const matchedCount = plan.rows.filter(r => r.status === 'matched').length;
+        const unmatchedCount = plan.rows.length - matchedCount;
+
+        const mirrorNote = plan.copiesFields
+            ? 'Grade, language, subject and modality columns will be written on the contract subitems.'
+            : 'Renewal reads these fields through the linked inquiry subitem, so only the link is written.';
+
+        const rows = plan.rows.map((row, index) => {
+            const options = [`<option value="">➕ Create a new subitem</option>`].concat(
+                plan.targetSubitems.map(sub => {
+                    const takenByOther = sub.linkedPifSubitemId && sub.linkedPifSubitemId !== row.pifSubitemId;
+                    const suffix = takenByOther ? ' — already linked to another teacher' : '';
+                    const selected = sub.id === row.matchedSubitemId ? 'selected' : '';
+                    return `<option value="${escapeAttr(sub.id)}" ${selected}>${escapeHtml(sub.name || 'Untitled')}${escapeHtml(suffix)}</option>`;
+                })
+            ).join('');
+
+            const statusBadge = row.status === 'matched'
+                ? `<span class="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 dark:bg-slate-800 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-slate-700 whitespace-nowrap">AUTO-MATCHED${row.matchSource === 'text' ? ' (TEXT)' : ''}</span>`
+                : `<span class="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 whitespace-nowrap">NEEDS MAPPING</span>`;
+
+            return `
+                <div class="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-800/40 space-y-2">
+                    <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                            <div class="font-semibold text-slate-900 dark:text-white text-sm truncate">${escapeHtml(row.pifName || 'Untitled position')}</div>
+                            <div class="text-[11px] text-slate-500 dark:text-slate-400 font-mono">Inquiry subitem #${escapeHtml(row.pifSubitemId)}</div>
+                        </div>
+                        ${statusBadge}
+                    </div>
+                    <select data-sync-row="${index}" onchange="validateContractMapping()" class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-brand-500 outline-none">
+                        ${options}
+                    </select>
+                    <div data-new-name="${index}" class="text-[11px] text-slate-500 dark:text-slate-400 hidden">
+                        Will be created as: <span class="font-mono text-brand-700 dark:text-brand-300">${escapeHtml(row.proposedName)}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        setContractSyncBody(`
+            <div class="p-3.5 rounded-xl bg-brand-50 dark:bg-slate-800 border border-brand-200 dark:border-slate-700 space-y-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs font-bold px-2 py-0.5 rounded-md border border-brand-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/40 text-brand-700 dark:text-brand-300">${escapeHtml(plan.targetLabel)}</span>
+                    <span class="font-bold text-slate-900 dark:text-white text-sm">${escapeHtml(plan.target.name)}</span>
+                </div>
+                <div class="text-[11px] text-slate-500 dark:text-slate-400">
+                    Group: <strong>${escapeHtml(plan.target.groupTitle || 'Unknown')}</strong> &middot;
+                    <span class="font-mono">#${escapeHtml(plan.target.itemId)}</span>
+                </div>
+                <div class="text-[11px] text-slate-600 dark:text-slate-300 pt-1">${escapeHtml(mirrorNote)}</div>
+            </div>
+
+            <div class="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+                <span><strong class="text-slate-800 dark:text-slate-200">${matchedCount}</strong> auto-matched</span>
+                <span><strong class="text-slate-800 dark:text-slate-200">${unmatchedCount}</strong> need a decision</span>
+            </div>
+
+            <div id="contractMappingWarning" class="hidden p-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-300 text-[11px]"></div>
+
+            <div class="space-y-2">${rows}</div>
+
+            <p class="text-[11px] text-slate-400 dark:text-slate-500 pt-1">
+                Existing subitems on the target that no longer match a teacher here are left untouched — nothing is deleted.
+            </p>
+        `);
+
+        validateContractMapping();
+    }
+
+    /**
+     * Blocks a mapping that points two teachers at the same target subitem,
+     * and toggles the "will be created as" hint per row.
+     */
+    function validateContractMapping() {
+        const selects = Array.from(document.querySelectorAll('[data-sync-row]'));
+        const counts = {};
+
+        selects.forEach(select => {
+            const index = select.getAttribute('data-sync-row');
+            const hint = document.querySelector(`[data-new-name="${index}"]`);
+            if (hint) hint.classList.toggle('hidden', select.value !== '');
+            if (select.value) counts[select.value] = (counts[select.value] || 0) + 1;
+        });
+
+        const duplicate = Object.keys(counts).find(key => counts[key] > 1);
+        const warning = document.getElementById('contractMappingWarning');
+
+        if (duplicate) {
+            const sub = contractSync.plan.targetSubitems.find(s => s.id === duplicate);
+            warning.textContent = `More than one teacher is mapped to "${sub ? sub.name : '#' + duplicate}". Each target subitem can only be used once.`;
+            warning.classList.remove('hidden');
+            setContractSyncPrimary('Update ' + contractSync.plan.targetLabel, true);
+            return;
+        }
+
+        warning.classList.add('hidden');
+        setContractSyncPrimary('Update ' + contractSync.plan.targetLabel, false);
+    }
+
+    function contractSyncBack() {
+        if (contractSync.step === 'manual-item') {
+            // Back to the board choice, not all the way out.
+            startManualTargetPick();
+            return;
+        }
+
+        contractSync.step = 'targets';
+        document.getElementById('contractSyncBackBtn').classList.add('hidden');
+        renderContractTargets(contractSync.targets);
+    }
+
+    function contractSyncPrimaryAction() {
+        // The board-choice step advances by its own buttons, and nothing can
+        // be planned until an item is selected.
+        if (contractSync.step === 'manual-board') return;
+        if (!contractSync.selectedTargetItemId && contractSync.step !== 'mapping') return;
+
+        // Only the mapping step commits; every earlier step advances.
+        if (contractSync.step === 'mapping') {
+            submitContractSync();
+        } else {
+            loadContractSyncPlan();
+        }
+    }
+
+    // ----- Step 3: commit -----
+
+    function submitContractSync() {
+        const rows = Array.from(document.querySelectorAll('[data-sync-row]')).map(select => {
+            const index = Number(select.getAttribute('data-sync-row'));
+            return {
+                pifSubitemId: contractSync.plan.rows[index].pifSubitemId,
+                targetSubitemId: select.value || ''
+            };
+        });
+
+        setContractSyncBody(`
+            <div class="flex flex-col items-center justify-center py-10 space-y-3">
+                <div class="loader"></div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Updating ${escapeHtml(contractSync.plan.targetLabel)}...</p>
+            </div>
+        `);
+        setContractSyncPrimary('', true);
+        document.getElementById('contractSyncBackBtn').classList.add('hidden');
+
+        google.script.run
+            .withSuccessHandler(renderContractSyncResult)
+            .withFailureHandler(err => {
+                renderContractSyncError(err && err.message ? err.message : String(err));
+            })
+            .applyContractSync({
+                pifItemId: currentItemId,
+                targetKey: contractSync.selectedTargetKey,
+                targetItemId: contractSync.selectedTargetItemId,
+                rows: rows,
+                clientMeta: clientMeta()
+            });
+    }
+
+    function renderContractSyncResult(res) {
+        if (!res) {
+            renderContractSyncError('No response from the server.');
+            return;
+        }
+
+        const tone = res.success
+            ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+            : 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200';
+
+        const detail = (res.results || []).map(row => {
+            const icon = row.status === 'created' ? 'fa-plus-circle text-emerald-600'
+                : row.status === 'updated' ? 'fa-pen-to-square text-blue-600'
+                    : 'fa-triangle-exclamation text-red-500';
+            const suffix = row.status === 'error'
+                ? `<span class="text-red-600 dark:text-red-400">${escapeHtml(row.message || 'Failed')}</span>`
+                : `<span class="font-mono text-slate-500 dark:text-slate-400">#${escapeHtml(row.targetSubitemId || '')}</span>`;
+            return `
+                <li class="flex items-start gap-2">
+                    <i class="fa-solid ${icon} mt-0.5 text-[10px]"></i>
+                    <span class="flex-1">${escapeHtml(row.pifName || row.pifSubitemId)} — ${escapeHtml(row.status)} ${suffix}</span>
+                </li>
+            `;
+        }).join('');
+
+        setContractSyncBody(`
+            <div class="p-4 rounded-xl border ${tone} text-xs">
+                <div class="font-bold flex items-center space-x-1.5 mb-1">
+                    <i class="fa-solid ${res.success ? 'fa-circle-check' : 'fa-triangle-exclamation'}"></i>
+                    <span>${escapeHtml(res.message || '')}</span>
+                </div>
+            </div>
+            ${detail ? `<ul class="text-[11px] space-y-1.5 text-slate-700 dark:text-slate-300">${detail}</ul>` : ''}
+        `);
+        setContractSyncPrimary('', true);
+        document.getElementById('contractSyncPrimaryBtn').classList.add('hidden');
+        document.getElementById('contractSyncBackBtn').classList.add('hidden');
+
+        // The work is finished, so "Skip for now" would misdescribe the button.
+        document.getElementById('contractSyncSkipBtn').textContent = 'Done';
+    }
+
+    // String Escaping Helpers
+    function escapeHtml(text) {
+        if (!text) return '';
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function escapeAttr(text) {
+        if (!text) return '';
+        return String(text).replace(/"/g, '&quot;');
+    }
+</script>

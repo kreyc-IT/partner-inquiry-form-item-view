@@ -1,0 +1,192 @@
+<!-- Tailwind CSS CDN -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+    tailwind.config = {
+        darkMode: 'class',
+        theme: {
+            extend: {
+                colors: {
+                    brand: {
+                        50: '#f0f4fc',
+                        100: '#dbe4f6',
+                        200: '#bfd1f0',
+                        300: '#7fa3e3',
+                        400: '#4675d0',
+                        500: '#16367B',
+                        600: '#122d67',
+                        700: '#0e2453',
+                        800: '#0a1b3f',
+                        900: '#06122b',
+                        950: '#030917',
+                    }
+                },
+                fontFamily: {
+                    sans: ['Inter', 'sans-serif'],
+                }
+            }
+        }
+    }
+</script>
+
+<!-- Google Fonts: Inter -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- Font Awesome icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+<!-- Monday SDK for Item View integration -->
+<script src="https://cdn.jsdelivr.net/npm/monday-sdk-js/dist/main.js"></script>
+
+<style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: rgba(0, 0, 0, 0.05);
+    }
+    .dark ::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.05);
+    }
+    ::-webkit-scrollbar-thumb {
+        background: rgba(22, 54, 123, 0.3);
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: rgba(22, 54, 123, 0.6);
+    }
+
+    /* Glassmorphism & Animations */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(229, 231, 235, 0.8);
+    }
+    .dark .glass-card {
+        background: rgba(17, 24, 39, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(55, 65, 81, 0.8);
+    }
+
+    .animate-fade-in {
+        animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    /* Input focus transitions */
+    input, select, textarea {
+        transition: all 0.2s ease-in-out;
+    }
+
+    /* Custom Checkbox Styling */
+    input[type="checkbox"] {
+        accent-color: #16367B;
+    }
+
+    /* ------------------------------------------------------------------
+       Multi-select checkbox containers
+       Mirrors the original Partner Inquiry Form treatment: uniform-height,
+       scrollable panels so every option group lines up on a grid row.
+       ------------------------------------------------------------------ */
+    .checkbox-container {
+        background-color: #ffffff;
+        border: 1px solid #cbd5e1;
+    }
+
+    .dark .checkbox-container {
+        background-color: #1e293b;
+        border-color: #334155;
+    }
+
+    .checkbox-container::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .checkbox-container::-webkit-scrollbar-track {
+        background: #f8fafc;
+        border-radius: 4px;
+    }
+
+    .dark .checkbox-container::-webkit-scrollbar-track {
+        background: #0f172a;
+    }
+
+    .checkbox-container::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
+    }
+
+    .dark .checkbox-container::-webkit-scrollbar-thumb {
+        background: #475569;
+    }
+
+    /* Row highlighting inside the option panels */
+    .checkbox-label {
+        border-radius: 6px;
+    }
+
+    .checkbox-container label:hover {
+        background-color: rgba(22, 54, 123, 0.06);
+    }
+
+    .dark .checkbox-container label:hover {
+        background-color: rgba(70, 117, 208, 0.12);
+    }
+
+    .checkbox-container label:has(input[type="checkbox"]:checked) {
+        background-color: rgba(22, 54, 123, 0.09);
+    }
+
+    .dark .checkbox-container label:has(input[type="checkbox"]:checked) {
+        background-color: rgba(70, 117, 208, 0.2);
+    }
+
+    .checkbox-container label:has(input[type="checkbox"]:checked) span {
+        font-weight: 600;
+        color: #16367B;
+    }
+
+    .dark .checkbox-container label:has(input[type="checkbox"]:checked) span {
+        color: #f3f4f6;
+    }
+
+    /* Loading spinner shown while Monday.com column options resolve */
+    .loader {
+        border: 3px solid #e5e7eb;
+        border-radius: 50%;
+        border-top: 3px solid #16367B;
+        width: 24px;
+        height: 24px;
+        animation: spin 1s linear infinite;
+    }
+
+    .dark .loader {
+        border-color: #334155;
+        border-top-color: #7fa3e3;
+    }
+
+    @keyframes spin {
+        0% {
+            transform: rotate(0deg);
+        }
+
+        100% {
+            transform: rotate(360deg);
+        }
+    }
+</style>

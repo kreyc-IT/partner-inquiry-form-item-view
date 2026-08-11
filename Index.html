@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kreyco Inquiry Edit Portal</title>
+    <?!= include('Stylesheet'); ?>
+</head>
+
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 min-h-full font-sans antialiased selection:bg-brand-500 selection:text-white transition-colors duration-200">
+
+    <!-- Global Loading Overlay -->
+    <div id="loadingOverlay" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm transition-opacity duration-300">
+        <div class="glass-card p-8 rounded-2xl shadow-2xl flex flex-col items-center max-w-sm text-center border border-white/20">
+            <div class="relative w-16 h-16 mb-4">
+                <div class="absolute inset-0 rounded-full border-4 border-brand-500/20"></div>
+                <div class="absolute inset-0 rounded-full border-4 border-brand-500 border-t-transparent animate-spin"></div>
+            </div>
+            <h3 id="loadingTitle" class="text-lg font-bold text-slate-900 dark:text-white">Loading Inquiry Data</h3>
+            <p id="loadingMessage" class="text-sm text-slate-500 dark:text-slate-400 mt-1">Connecting to Monday.com...</p>
+        </div>
+    </div>
+
+    <!-- Item ID Prompt Banner (When no Item ID is specified in URL or Monday Context) -->
+    <div id="itemIdBanner" class="hidden bg-amber-50 dark:bg-amber-950/50 border-b border-amber-200 dark:border-amber-800 px-4 py-3">
+        <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-amber-900 dark:text-amber-200">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-triangle-exclamation text-amber-600 dark:text-amber-400 text-base"></i>
+                <span>No Monday.com Item ID anchored. Enter an Item ID to load submission details:</span>
+            </div>
+            <div class="flex items-center space-x-2 w-full sm:w-auto">
+                <input type="text" id="manualItemId" placeholder="e.g. 6938836032" class="px-3 py-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none w-full sm:w-48">
+                <button type="button" onclick="loadManualItem()" class="px-4 py-1.5 bg-brand-500 hover:bg-brand-600 text-white font-medium rounded-lg text-sm transition-colors shadow-sm whitespace-nowrap">
+                    Load Item
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Item Sticky Header Bar -->
+    <header class="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 transition-colors">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-9 h-9 rounded-xl bg-brand-500/10 dark:bg-brand-500/20 text-brand-500 dark:text-brand-400 flex items-center justify-center font-bold text-lg">
+                    <i class="fa-solid fa-pen-to-square"></i>
+                </div>
+                <div>
+                    <h1 class="text-base sm:text-lg font-bold text-slate-900 dark:text-white leading-tight">
+                        Kreyco Inquiry Edit Portal
+                    </h1>
+                    <div id="activeItemBadge" class="flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span>Monday.com Item ID:</span>
+                        <span id="displayItemId" class="font-mono font-semibold text-brand-700 dark:text-brand-300 bg-brand-50 dark:bg-slate-800 border border-brand-200 dark:border-slate-700 px-2 py-0.5 rounded">Not Loaded</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-3">
+                <!-- Theme Switcher -->
+                <button type="button" onclick="toggleTheme()" class="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800 transition-colors" title="Toggle Light/Dark Theme">
+                    <i id="themeIcon" class="fa-solid fa-moon"></i>
+                </button>
+                <button type="button" onclick="openPreviewModal()" class="hidden sm:inline-flex items-center space-x-2 px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white font-semibold rounded-xl text-sm transition-all shadow-md hover:shadow-lg active:scale-95">
+                    <i class="fa-solid fa-floppy-disk"></i>
+                    <span>Save Changes</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+        <form id="inquiryForm" onsubmit="event.preventDefault(); openPreviewModal();" class="space-y-8">
+            
+            <!-- School Information Card -->
+            <div class="glass-card rounded-2xl p-6 sm:p-8 shadow-sm">
+                <div class="flex items-center justify-between pb-6 mb-6 border-b border-slate-200 dark:border-slate-800">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-8 h-8 rounded-lg bg-brand-500 text-white flex items-center justify-center font-bold text-sm">
+                            1
+                        </div>
+                        <h2 class="text-xl font-bold text-slate-900 dark:text-white">School & Contact Details</h2>
+                    </div>
+                    <span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-brand-50 dark:bg-slate-800 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-slate-700">Editable</span>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- School Name -->
+                    <div class="md:col-span-2">
+                        <label for="schoolName" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">School Name <span class="text-red-500">*</span></label>
+                        <input type="text" id="schoolName" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+                    </div>
+
+                    <!-- Address -->
+                    <div class="md:col-span-2">
+                        <label for="address" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">School Address <span class="text-red-500">*</span></label>
+                        <input type="text" id="address" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+                    </div>
+
+                    <!-- Contact Name -->
+                    <div>
+                        <label for="fullName" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Contact Full Name <span class="text-red-500">*</span></label>
+                        <input type="text" id="fullName" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+                    </div>
+
+                    <!-- Contact Email -->
+                    <div>
+                        <label for="email" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Contact Email <span class="text-red-500">*</span></label>
+                        <input type="email" id="email" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+                    </div>
+
+                    <!-- Contact Phone -->
+                    <div>
+                        <label for="phone" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Contact Phone <span class="text-red-500">*</span></label>
+                        <input type="tel" id="phone" required class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+                    </div>
+
+                    <!-- Global Certification -->
+                    <div>
+                        <label for="certification" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Global Teacher Certification Requirement</label>
+                        <select id="certification" class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none">
+                            <option value="">Select Certification Standard...</option>
+                        </select>
+                    </div>
+
+                    <!-- School Calendar Option -->
+                    <div class="md:col-span-2 space-y-3 pt-2">
+                        <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300">School Calendar</label>
+                        <div id="calendarPreview" class="hidden p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center justify-between text-xs">
+                            <span class="text-slate-600 dark:text-slate-400 font-medium">Current Calendar:</span>
+                            <span id="calendarPreviewText" class="font-mono text-brand-700 dark:text-brand-300 font-semibold truncate max-w-md"></span>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <textarea id="calendarText" rows="2" placeholder="Enter school calendar text or description..." class="w-full px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none"></textarea>
+                            </div>
+                            <div class="flex flex-col justify-center">
+                                <label for="calendar" class="cursor-pointer border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-brand-500 rounded-xl p-3 text-center transition-colors">
+                                    <i class="fa-solid fa-cloud-arrow-up text-brand-600 dark:text-brand-300 text-lg mb-1"></i>
+                                    <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Upload Replacement Calendar</span>
+                                    <span id="calendarFileName" class="block text-xs text-slate-500 mt-0.5">PDF, DOC, DOCX up to 10MB</span>
+                                </label>
+                                <input type="file" id="calendar" class="hidden" accept=".pdf,.doc,.docx">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bell Schedule Option -->
+                    <div class="md:col-span-2 space-y-3 pt-2">
+                        <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Bell Schedule</label>
+                        <div id="bellSchedulePreview" class="hidden p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 flex items-center justify-between text-xs">
+                            <span class="text-slate-600 dark:text-slate-400 font-medium">Current Bell Schedule:</span>
+                            <span id="bellSchedulePreviewText" class="font-mono text-brand-700 dark:text-brand-300 font-semibold truncate max-w-md"></span>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <textarea id="bellScheduleText" rows="2" placeholder="Enter bell schedule text or description..." class="w-full px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none"></textarea>
+                            </div>
+                            <div class="flex flex-col justify-center">
+                                <label for="bellSchedule" class="cursor-pointer border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-brand-500 rounded-xl p-3 text-center transition-colors">
+                                    <i class="fa-solid fa-cloud-arrow-up text-brand-600 dark:text-brand-300 text-lg mb-1"></i>
+                                    <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Upload Replacement Bell Schedule</span>
+                                    <span id="bellScheduleFileName" class="block text-xs text-slate-500 mt-0.5">PDF, DOC, DOCX up to 10MB</span>
+                                </label>
+                                <input type="file" id="bellSchedule" class="hidden" accept=".pdf,.doc,.docx">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Additional Info -->
+                    <div class="md:col-span-2">
+                        <label for="additionalInfo" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Additional Notes / Information</label>
+                        <textarea id="additionalInfo" rows="3" class="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none"></textarea>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Teachers Section -->
+            <div class="glass-card rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-8 h-8 rounded-lg bg-brand-500 text-white flex items-center justify-center font-bold text-sm">
+                            2
+                        </div>
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900 dark:text-white">Teacher Staffing Requests</h2>
+                            <p class="text-xs text-slate-500 dark:text-slate-400">Modify existing teacher subitems, add new ones, or delete unwanted positions.</p>
+                        </div>
+                    </div>
+
+                    <!-- TBD Checkbox Toggle -->
+                    <label class="inline-flex items-center space-x-2.5 cursor-pointer bg-slate-100 dark:bg-slate-800 px-4 py-2 rounded-xl text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                        <input type="checkbox" id="tbdToggle" onchange="toggleTBDMode(this.checked)" class="w-4 h-4 rounded text-brand-500 focus:ring-brand-500">
+                        <span class="text-slate-800 dark:text-slate-200">Staffing TBD (Details Pending)</span>
+                    </label>
+                </div>
+
+                <!-- TBD Description Input (Visible only when TBD is checked) -->
+                <div id="tbdDescriptionContainer" class="hidden p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800">
+                    <label for="tbdDescription" class="block text-sm font-semibold text-amber-900 dark:text-amber-200 mb-1.5">TBD Staffing Overview & Requirements</label>
+                    <textarea id="tbdDescription" rows="3" placeholder="Describe general teacher needs or pending subject areas..." class="w-full px-4 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-brand-500 outline-none"></textarea>
+                </div>
+
+                <!-- Teacher Cards Container -->
+                <div id="teachersContainer" class="space-y-6">
+                    <!-- Dynamic Teacher Cards dynamically injected by JavaScript -->
+                </div>
+
+                <!-- Add Teacher Button -->
+                <div id="addTeacherBtnContainer" class="pt-2 flex justify-center sm:justify-start">
+                    <button type="button" onclick="addTeacherCard()" class="inline-flex items-center space-x-2.5 px-6 py-3 border-2 border-dashed border-brand-500/60 hover:border-brand-500 text-brand-700 dark:text-brand-300 font-bold rounded-xl text-sm transition-all hover:bg-brand-50 dark:hover:bg-slate-800/80 bg-white/60 dark:bg-slate-800/40 shadow-sm hover:shadow-md cursor-pointer">
+                        <i class="fa-solid fa-plus text-xs"></i>
+                        <span>Add Another Teacher Request</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Submit Action Footer -->
+            <div class="flex items-center justify-end space-x-4 pt-4">
+                <button type="button" onclick="openPreviewModal()" class="w-full sm:w-auto px-8 py-3 bg-brand-500 hover:bg-brand-600 text-white font-bold rounded-xl text-base shadow-lg hover:shadow-xl active:scale-95 transition-all">
+                    <i class="fa-solid fa-circle-check mr-2"></i>Review & Save Changes
+                </button>
+            </div>
+
+        </form>
+    </main>
+
+    <!-- Preview & Confirm Modal -->
+    <div id="previewModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm">
+        <div class="glass-card w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 bg-brand-500 text-white flex items-center justify-between">
+                <h3 class="text-lg font-bold flex items-center space-x-2">
+                    <i class="fa-solid fa-clipboard-check"></i>
+                    <span>Confirm Changes to Submission</span>
+                </h3>
+                <button type="button" onclick="closePreviewModal()" class="text-white/80 hover:text-white text-xl">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div id="previewContent" class="p-6 overflow-y-auto space-y-4 text-sm text-slate-700 dark:text-slate-300">
+                <!-- Injected via JavaScript -->
+            </div>
+
+            <div class="px-6 py-4 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-end space-x-3">
+                <button type="button" onclick="closePreviewModal()" class="px-5 py-2 rounded-xl text-slate-600 dark:text-slate-300 font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 text-sm transition-colors">
+                    Back to Editing
+                </button>
+                <button type="button" id="previewConfirmBtn" onclick="confirmPreviewAction()" class="px-6 py-2 bg-brand-500 hover:bg-brand-600 text-white font-bold rounded-xl text-sm shadow-md hover:shadow-lg transition-all">
+                    Confirm &amp; Update the PIF
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contract / Renewal Sync Modal (opens after the PIF save succeeds) -->
+    <div id="contractSyncModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm">
+        <div class="glass-card w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 bg-brand-500 text-white flex items-center justify-between">
+                <div>
+                    <h3 class="text-lg font-bold flex items-center space-x-2">
+                        <i class="fa-solid fa-file-signature"></i>
+                        <span>Update Contract / Renewal</span>
+                    </h3>
+                    <p id="contractSyncSubtitle" class="text-xs text-white/80 mt-0.5">Changes to this inquiry have been saved.</p>
+                </div>
+                <button type="button" onclick="closeContractSyncModal()" class="text-white/80 hover:text-white text-xl" title="Skip">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div id="contractSyncBody" class="p-6 overflow-y-auto space-y-4 text-sm text-slate-700 dark:text-slate-300">
+                <!-- Injected via JavaScript -->
+            </div>
+
+            <div class="px-6 py-4 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
+                <button type="button" id="contractSyncBackBtn" onclick="contractSyncBack()" class="hidden px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 text-sm transition-colors">
+                    <i class="fa-solid fa-arrow-left mr-1.5"></i>Back
+                </button>
+                <div class="flex items-center justify-end space-x-3 ml-auto">
+                    <button type="button" id="contractSyncSkipBtn" onclick="closeContractSyncModal()" class="px-5 py-2 rounded-xl text-slate-600 dark:text-slate-300 font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 text-sm transition-colors">
+                        Skip for now
+                    </button>
+                    <button type="button" id="contractSyncPrimaryBtn" onclick="contractSyncPrimaryAction()" class="px-6 py-2 bg-brand-500 hover:bg-brand-600 text-white font-bold rounded-xl text-sm shadow-md hover:shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                        Continue
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Server-side injected URL parameter itemId (if opened via ?itemId=12345)
+        window.SERVER_ITEM_ID = "<?= itemId ?>";
+    </script>
+    <?!= include('JavaScript'); ?>
+</body>
+
+</html>
