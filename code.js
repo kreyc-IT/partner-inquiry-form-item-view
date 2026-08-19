@@ -671,6 +671,17 @@ function processUpdateApplication(data) {
     // STEP 4: Process Subitems (Edit existing or Create new)
     let processedTeachers = data.teachers || [];
     if (processedTeachers.length > 0) {
+      // Updating a subitem needs the board it lives on, which is the subitem
+      // board, not the parent board. Resolve it once for the whole save
+      // instead of per teacher - it is an extra API round-trip each time.
+      let subitemBoardId = null;
+      if (processedTeachers.some(function (t) { return !!t.subitemId; })) {
+        subitemBoardId = getSubitemBoardId();
+        if (!subitemBoardId) {
+          throw new Error("Could not resolve the subitem board ID; teacher edits were not saved.");
+        }
+      }
+
       processedTeachers.forEach(teacher => {
         // Upload teacher schedule file if new file provided
         if (teacher.teachingScheduleFileData && teacher.teachingScheduleFileName && mainFolder) {
@@ -692,7 +703,7 @@ function processUpdateApplication(data) {
 
         if (teacher.subitemId) {
           // Existing subitem -> Update
-          updateSubitem(teacher.subitemId, teacher);
+          updateSubitem(teacher.subitemId, teacher, subitemBoardId);
         } else {
           // New teacher card -> Create new subitem
           const newSubId = createSubitem(itemId, teacher);
@@ -847,23 +858,37 @@ function buildTeacherColumnValues(teacher, clearEmpty) {
 
 /**
  * Updates an existing Subitem on Monday.com
+ *
+ * board_id is required by change_multiple_column_values and must be the
+ * subitem board - subitems do not live on the parent board. Callers resolve
+ * it once via getSubitemBoardId() and pass it in.
  */
-function updateSubitem(subitemId, teacher) {
+function updateSubitem(subitemId, teacher, subitemBoardId) {
+  if (!subitemBoardId) {
+    throw new Error("updateSubitem requires the subitem board ID.");
+  }
+
   const columnValues = buildTeacherColumnValues(teacher, true);
   columnValues["name"] = teacher.name;
 
   const query = `
     mutation {
       change_multiple_column_values (
+        board_id: ${subitemBoardId},
         item_id: ${subitemId},
-        column_values: ${JSON.stringify(JSON.stringify(columnValues))}
+        column_values: ${JSON.stringify(JSON.stringify(columnValues))},
+        create_labels_if_missing: true
       ) {
         id
       }
     }
   `;
 
-  return callMondayAPI(query);
+  const response = callMondayAPI(query);
+  if (response.errors) {
+    throw new Error("Monday API Update Subitem Error: " + JSON.stringify(response.errors));
+  }
+  return response;
 }
 
 /**
