@@ -1196,6 +1196,31 @@
 
             // Process calendar file upload if new file selected
             const calFile = document.getElementById('calendar').files[0];
+            const bellFilePre = document.getElementById('bellSchedule').files[0];
+
+            // Check every file before encoding any of them, so an oversized
+            // attachment is reported up front instead of after a long wait.
+            const fileProblems = [
+                checkUploadFile(calFile, 'School calendar'),
+                checkUploadFile(bellFilePre, 'Bell schedule')
+            ];
+            document.querySelectorAll('.teacher-card').forEach(card => {
+                const cardId = card.getAttribute('data-card-id');
+                const input = document.getElementById(`teacherSchedule_${cardId}`);
+                const nameField = card.querySelector('[data-field="name"]');
+                const who = (nameField && nameField.value) || 'teacher position';
+                if (input && input.files.length > 0) {
+                    fileProblems.push(checkUploadFile(input.files[0], `Schedule for "${who}"`));
+                }
+            });
+
+            const blockingProblems = fileProblems.filter(Boolean);
+            if (blockingProblems.length > 0) {
+                hideLoadingOverlay();
+                alert("These files cannot be uploaded:\n\n" + blockingProblems.map(p => "\u2022 " + p).join("\n"));
+                return;
+            }
+
             if (calFile) {
                 schoolData.calendarFileData = await fileToBase64(calFile);
                 schoolData.calendarFileName = calFile.name;
@@ -1268,6 +1293,14 @@
             google.script.run
                 .withSuccessHandler(res => {
                     hideLoadingOverlay();
+
+                    // Parts of a save can fail without losing the edits - an
+                    // upload that did not attach, a PDF that did not rebuild.
+                    // Those come back as warnings and are shown before the
+                    // flow moves on, so the user does not assume the file
+                    // made it onto Monday.
+                    const warnings = (res && res.warnings) || [];
+
                     if (res && res.success) {
                         // Those subitems are gone on Monday.com now; clear the
                         // queue so a second save does not re-issue the deletes
@@ -1275,11 +1308,22 @@
                         deletedSubitemIds = [];
                         clearFileInputs();
 
+                        if (warnings.length > 0) {
+                            alert(
+                                "Your changes were saved, but some parts did not go through:\n\n" +
+                                warnings.map(w => "\u2022 " + w).join("\n") +
+                                "\n\nEverything else was saved successfully."
+                            );
+                        }
+
                         // The PIF is saved and every teacher now has a subitem
                         // ID, so the contract sync has something to map against.
                         openContractSyncModal();
                     } else {
-                        alert(res ? res.message : "Error saving updates.");
+                        const base = res ? res.message : "Error saving updates.";
+                        alert(warnings.length > 0
+                            ? base + "\n\nAlso:\n" + warnings.map(w => "\u2022 " + w).join("\n")
+                            : base);
                     }
                 })
                 .withFailureHandler(err => {
@@ -1963,6 +2007,26 @@
     }
 
     // String Escaping Helpers
+    // Mirrors validateUpload_ on the server. This is only for fast feedback -
+    // the server check is the one that actually protects Drive.
+    const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+    const UPLOAD_ALLOWED_EXTENSIONS = ['pdf', 'doc', 'docx'];
+
+    function checkUploadFile(file, label) {
+        if (!file) return null;
+        const name = file.name || '';
+        const dot = name.lastIndexOf('.');
+        const extension = dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
+
+        if (UPLOAD_ALLOWED_EXTENSIONS.indexOf(extension) === -1) {
+            return `${label}: "${name}" is a .${extension || 'unknown'} file. Only ${UPLOAD_ALLOWED_EXTENSIONS.join(', ')} files are accepted.`;
+        }
+        if (file.size > UPLOAD_MAX_BYTES) {
+            return `${label}: "${name}" is ${(file.size / (1024 * 1024)).toFixed(1)} MB, over the ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB limit.`;
+        }
+        return null;
+    }
+
     function escapeHtml(text) {
         if (!text) return '';
         return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

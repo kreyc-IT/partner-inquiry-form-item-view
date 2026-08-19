@@ -720,6 +720,11 @@ function processUpdateApplication(data) {
     Logger.log(`Updating parent item ID: ${itemId}`);
     updateParentItem(itemId, data.schoolData);
 
+    // Non-fatal problems worth telling the user about. A failed upload must
+    // not lose the teacher edits, but it must not pass silently either - the
+    // save otherwise reports success while the file is missing on Monday.
+    const warnings = [];
+
     // STEP 2: Handle Calendar replacement file upload
     let calendarUrl = null;
     if (data.schoolData.calendarFileData && data.schoolData.calendarFileName && mainFolder) {
@@ -731,6 +736,7 @@ function processUpdateApplication(data) {
         }
       } catch (calErr) {
         Logger.log("Calendar upload error: " + calErr);
+        warnings.push(`The school calendar file could not be attached. ${reasonFor_(calErr)}`);
       }
     } else if (data.schoolData.calendarText) {
       updateMondayColumn(itemId, "long_text_mkzw9xs4", { text: data.schoolData.calendarText });
@@ -747,6 +753,7 @@ function processUpdateApplication(data) {
         }
       } catch (bellErr) {
         Logger.log("Bell schedule upload error: " + bellErr);
+        warnings.push(`The bell schedule file could not be attached. ${reasonFor_(bellErr)}`);
       }
     } else if (data.schoolData.bellScheduleText) {
       updateMondayColumn(itemId, "long_text_mkzwd7xp", { text: data.schoolData.bellScheduleText });
@@ -800,6 +807,7 @@ function processUpdateApplication(data) {
             }
           } catch (tFileErr) {
             Logger.log("Teacher schedule file upload error: " + tFileErr);
+            warnings.push(`The schedule file for "${teacher.name || 'a teacher position'}" could not be attached. ${reasonFor_(tFileErr)}`);
           }
         }
 
@@ -826,6 +834,7 @@ function processUpdateApplication(data) {
         generateAndUploadPDF(completionData, itemId, mainFolder, submissionDate);
       } catch (pdfErr) {
         Logger.log("PDF update error: " + pdfErr);
+        warnings.push('The submission PDF could not be regenerated, so the PDF link on Monday still shows the previous version.');
       }
     }
 
@@ -852,11 +861,16 @@ function processUpdateApplication(data) {
       return {
         success: false,
         message: "Your edits were saved, but these teacher position(s) could not be removed: " +
-          failedDeletes.join(', ') + ". Please try removing them again."
+          failedDeletes.join(', ') + ". Please try removing them again.",
+        warnings: warnings
       };
     }
 
-    return { success: true, message: "Inquiry submission updated successfully!" };
+    return {
+      success: true,
+      message: "Inquiry submission updated successfully!",
+      warnings: warnings
+    };
 
   } catch (error) {
     Logger.log("Error in processUpdateApplication: " + error.toString());
@@ -1070,7 +1084,82 @@ function inheritFilePermissions(targetFile, sourceFolder) {
   }
 }
 
+// Uploads are accepted from any signed-in domain user and written into the
+// deploying account's Drive, so the browser's accept="" filter is not a
+// control - it is a convenience. These are the real limits.
+const UPLOAD_MAX_BYTES = 10 * 1024 * 1024; // 10 MB per file
+const UPLOAD_ALLOWED_EXTENSIONS = ['pdf', 'doc', 'docx'];
+const UPLOAD_ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+];
+
+/**
+ * Validates one client-supplied upload before it is decoded to a blob.
+ *
+ * Throws with a message meant for the user - callers let it bubble into the
+ * save's warning list rather than failing the whole save.
+ *
+ * @param {string} fileName Original file name from the browser.
+ * @param {string} mimeType Reported MIME type; browsers leave this empty for
+ *   some .doc files, so an allowed extension carries an empty type.
+ * @param {string} base64Data The encoded payload, used to size the file.
+ * @param {string} label Human-readable name of the field, used in errors.
+ */
+/**
+ * Turns a caught error into something worth showing the user. Validation
+ * messages are written for them; anything else is left generic and stays in
+ * the log.
+ */
+function reasonFor_(err) {
+  const message = (err && err.message) ? String(err.message) : String(err || '');
+  return /^(School calendar|Bell schedule|Schedule for)/.test(message)
+    ? message
+    : 'Please try uploading it again.';
+}
+
+function validateUpload_(fileName, mimeType, base64Data, label) {
+  const name = String(fileName || '').trim();
+  if (!name) {
+    throw new Error(`${label}: the file has no name.`);
+  }
+
+  const dot = name.lastIndexOf('.');
+  const extension = dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
+  if (UPLOAD_ALLOWED_EXTENSIONS.indexOf(extension) === -1) {
+    throw new Error(
+      `${label}: "${name}" is a .${extension || 'unknown'} file. ` +
+      `Only ${UPLOAD_ALLOWED_EXTENSIONS.join(', ')} files are accepted.`
+    );
+  }
+
+  const type = String(mimeType || '').trim().toLowerCase();
+  if (type && UPLOAD_ALLOWED_MIME_TYPES.indexOf(type) === -1) {
+    throw new Error(`${label}: "${name}" is not a document file (${type}).`);
+  }
+
+  // base64 carries 3 bytes per 4 characters; the trailing '=' padding is not
+  // part of the payload.
+  const encoded = String(base64Data || '');
+  if (!encoded) {
+    throw new Error(`${label}: "${name}" arrived empty.`);
+  }
+  const padding = encoded.endsWith('==') ? 2 : (encoded.endsWith('=') ? 1 : 0);
+  const bytes = Math.floor(encoded.length * 3 / 4) - padding;
+  if (bytes > UPLOAD_MAX_BYTES) {
+    const mb = (bytes / (1024 * 1024)).toFixed(1);
+    throw new Error(
+      `${label}: "${name}" is ${mb} MB, over the ` +
+      `${UPLOAD_MAX_BYTES / (1024 * 1024)} MB limit.`
+    );
+  }
+
+  return name;
+}
+
 function uploadSchoolCalendar(schoolData, parentId, mainFolder, submissionDate) {
+  validateUpload_(schoolData.calendarFileName, schoolData.calendarMimeType, schoolData.calendarFileData, 'School calendar');
   const schoolFolder = getOrCreateFolder(mainFolder, schoolData.schoolName);
   const dateFolder = getOrCreateFolder(schoolFolder, submissionDate);
   const newFileName = `School Calendar File (Updated) - ${schoolData.calendarFileName}`;
@@ -1087,6 +1176,7 @@ function uploadSchoolCalendar(schoolData, parentId, mainFolder, submissionDate) 
 }
 
 function uploadBellSchedule(schoolData, parentId, mainFolder, submissionDate) {
+  validateUpload_(schoolData.bellScheduleFileName, schoolData.bellScheduleMimeType, schoolData.bellScheduleFileData, 'Bell schedule');
   const schoolFolder = getOrCreateFolder(mainFolder, schoolData.schoolName);
   const dateFolder = getOrCreateFolder(schoolFolder, submissionDate);
   const newFileName = `Bell Schedule File (Updated) - ${schoolData.bellScheduleFileName}`;
@@ -1103,6 +1193,7 @@ function uploadBellSchedule(schoolData, parentId, mainFolder, submissionDate) {
 }
 
 function uploadTeacherSchedule(teacher, schoolName, mainFolder, submissionDate) {
+  validateUpload_(teacher.teachingScheduleFileName, teacher.teachingScheduleMimeType, teacher.teachingScheduleFileData, `Schedule for "${teacher.name || 'teacher position'}"`);
   const schoolFolder = getOrCreateFolder(mainFolder, schoolName);
   const dateFolder = getOrCreateFolder(schoolFolder, submissionDate);
   const newFileName = `${teacher.name} - Schedule (Updated) - ${teacher.teachingScheduleFileName}`;
@@ -1292,10 +1383,11 @@ const CONTRACT_API_VERSION = '2024-10';
 // PIF parent column holding the Lead item ID.
 const PIF_LEAD_ID_COLUMN = 'text_mkzk3t3r';
 
-const CONTRACT_TARGETS = {
+const CONTRACT_TARGET_DEFAULTS = {
   new_contract: {
     key: 'new_contract',
     label: 'New Contract',
+    // Overridden by NEW_CONTRACT_BOARD_ID / NEW_CONTRACT_SUBITEM_BOARD_ID.
     boardId: '9746564033',
     subitemBoardId: '9746564389',
     // Found by exact match of this column against the PIF's Lead ID.
@@ -1308,6 +1400,7 @@ const CONTRACT_TARGETS = {
   renewal: {
     key: 'renewal',
     label: 'Renewal',
+    // Overridden by RENEWAL_BOARD_ID / RENEWAL_SUBITEM_BOARD_ID.
     boardId: '18417033017',
     subitemBoardId: '18417033021',
     // Found by this relation pointing back at the PIF parent item...
@@ -1319,6 +1412,50 @@ const CONTRACT_TARGETS = {
     copiesFields: false
   }
 };
+
+// Script Property overrides for the board IDs above, so the same code can be
+// pointed at a test board without an edit-and-push. Column IDs stay in the
+// source: they are structural, and a mismatch there is a code change, not a
+// configuration one.
+const CONTRACT_BOARD_PROPERTIES = {
+  new_contract: { boardId: 'NEW_CONTRACT_BOARD_ID', subitemBoardId: 'NEW_CONTRACT_SUBITEM_BOARD_ID' },
+  renewal: { boardId: 'RENEWAL_BOARD_ID', subitemBoardId: 'RENEWAL_SUBITEM_BOARD_ID' }
+};
+
+let contractTargetsCache_ = null;
+
+/**
+ * The contract targets with any Script Property overrides applied.
+ *
+ * Falls back to the values in CONTRACT_TARGET_DEFAULTS, so the portal keeps
+ * working if the properties are never set. Cached for the execution because
+ * every sync step asks for it.
+ */
+function getContractTargets() {
+  if (contractTargetsCache_) return contractTargetsCache_;
+
+  const props = PropertiesService.getScriptProperties();
+  const resolved = {};
+
+  Object.keys(CONTRACT_TARGET_DEFAULTS).forEach(function (key) {
+    const target = {};
+    const defaults = CONTRACT_TARGET_DEFAULTS[key];
+    Object.keys(defaults).forEach(function (field) { target[field] = defaults[field]; });
+
+    const overrides = CONTRACT_BOARD_PROPERTIES[key] || {};
+    Object.keys(overrides).forEach(function (field) {
+      const value = props.getProperty(overrides[field]);
+      if (value && String(value).trim()) {
+        target[field] = String(value).trim();
+      }
+    });
+
+    resolved[key] = target;
+  });
+
+  contractTargetsCache_ = resolved;
+  return resolved;
+}
 
 /**
  * Items in a closed-out group are not valid sync targets - that work is
@@ -1573,7 +1710,7 @@ function findContractTargets(pifItemId) {
     const found = [];
 
     // --- New Contract: matched through the Lead ID catcher column ---
-    const nc = CONTRACT_TARGETS.new_contract;
+    const nc = getContractTargets().new_contract;
     if (info.leadId) {
       const ncItems = queryBoardItemsByColumn(nc.boardId, nc.leadCatcherColumn, info.leadId);
       if (ncItems === null) {
@@ -1588,7 +1725,7 @@ function findContractTargets(pifItemId) {
 
     // --- Renewal: several link shapes are possible, so try each ---
     findRenewalCandidates(pifItemId, info.leadId, diagnostics)
-      .forEach(function (item) { found.push(decorateCandidate(CONTRACT_TARGETS.renewal, item)); });
+      .forEach(function (item) { found.push(decorateCandidate(getContractTargets().renewal, item)); });
 
     // Drop closed-out items, but report that they existed so an empty list
     // is not mistaken for a broken lookup.
@@ -1634,7 +1771,7 @@ const MANUAL_GROUP_PATTERN = /won|pending/i;
  */
 function listManualTargets(targetKey) {
   try {
-    const target = CONTRACT_TARGETS[targetKey];
+    const target = getContractTargets()[targetKey];
     if (!target) return { success: false, message: `Unknown target type "${targetKey}".` };
 
     const query = `
@@ -1714,7 +1851,7 @@ function decorateCandidate(target, item) {
  * Results are de-duplicated by item ID.
  */
 function findRenewalCandidates(pifItemId, leadId, diagnostics) {
-  const rn = CONTRACT_TARGETS.renewal;
+  const rn = getContractTargets().renewal;
   const byId = {};
 
   const absorb = function (items) {
@@ -1826,7 +1963,7 @@ function getTargetSubitems(target, targetItemId) {
  */
 function getContractSyncPlan(pifItemId, targetKey, targetItemId) {
   try {
-    const target = CONTRACT_TARGETS[targetKey];
+    const target = getContractTargets()[targetKey];
     if (!target) return { success: false, message: `Unknown target type "${targetKey}".` };
     if (!targetItemId) return { success: false, message: "No target item selected." };
 
@@ -1923,7 +2060,7 @@ function buildContractFieldValues(target, teacher) {
 function applyContractSync(payload) {
   const startedAt = new Date().getTime();
   try {
-    const target = CONTRACT_TARGETS[payload.targetKey];
+    const target = getContractTargets()[payload.targetKey];
     if (!target) return { success: false, message: `Unknown target type "${payload.targetKey}".` };
     if (!payload.targetItemId) return { success: false, message: "No target item selected." };
 
