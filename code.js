@@ -78,8 +78,10 @@ const LOG_HEADERS = [
   'Duration (ms)'
 ];
 
-// Sheet cells hold far more than this, but a runaway payload helps nobody.
-const LOG_DETAIL_LIMIT = 2000;
+// A sheet cell holds 50,000 characters. Details now carry a field-level diff,
+// so the old 2,000 was cutting real saves short; this leaves plenty of room
+// while still capping a runaway payload.
+const LOG_DETAIL_LIMIT = 20000;
 
 /**
  * Returns the log sheet, creating the tab and header row when needed.
@@ -154,14 +156,96 @@ function logEvent_(event, entry) {
 }
 
 /**
- * Reads the Monday user ID the client passed alongside a request, if any.
- * The web app runs as the deploying user with anonymous access, so
- * Session.getActiveUser() cannot identify who is actually using the portal -
- * the Monday.com SDK context is the only real attribution available.
+ * Counts the changed fields across an item and its subitems, for the one-line
+ * summary column.
+ */
+function countChanges_(changes) {
+  if (!changes) return 0;
+  let total = Object.keys(changes.item || {}).length;
+  Object.keys(changes.subitems || {}).forEach(function (subitemId) {
+    total += Object.keys(changes.subitems[subitemId]).length;
+  });
+  return total;
+}
+
+/**
+ * Assembles the Details cell for a save.
+ *
+ * JSON keeps this compact enough to sit in one cell: only sections with
+ * something in them are included, so an ordinary save logs a short object and
+ * only a messy one grows. Field values are trimmed individually so that one
+ * long free-text field cannot push the errors off the end of the cell.
+ *
+ * @param {Object} changes  { item, subitems, created, deleted }
+ * @param {Array}  warnings User-facing warning strings.
+ * @param {Array}  errors   Technical error records.
+ * @param {Object} extra    Any additional flags to record.
+ */
+function buildSaveDetails_(changes, warnings, errors, extra) {
+  const details = {};
+  const source = changes || {};
+
+  if (!isEmpty_(source.item)) details.item = trimChangeValues_(source.item);
+  if (!isEmpty_(source.subitems)) {
+    const subitems = {};
+    Object.keys(source.subitems).forEach(function (subitemId) {
+      subitems[subitemId] = trimChangeValues_(source.subitems[subitemId]);
+    });
+    details.subitems = subitems;
+  }
+  if (source.created && source.created.length) details.created = source.created;
+  if (source.deleted && source.deleted.length) details.deleted = source.deleted;
+  if (warnings && warnings.length) details.warnings = warnings;
+  if (errors && errors.length) details.errors = errors;
+
+  Object.keys(extra || {}).forEach(function (key) { details[key] = extra[key]; });
+
+  return details;
+}
+
+// Long-text fields (duties, descriptions) would otherwise dominate the cell.
+const LOG_VALUE_LIMIT = 180;
+
+/**
+ * Shortens the before/after strings in one column diff.
+ */
+function trimChangeValues_(columnChanges) {
+  const trimmed = {};
+  Object.keys(columnChanges || {}).forEach(function (columnId) {
+    trimmed[columnId] = columnChanges[columnId].map(function (value) {
+      const text = String(value === null || value === undefined ? '' : value);
+      return text.length > LOG_VALUE_LIMIT
+        ? text.slice(0, LOG_VALUE_LIMIT) + '...'
+        : text;
+    });
+  });
+  return trimmed;
+}
+
+/**
+ * Identifies who performed an action.
+ *
+ * The Monday SDK context is the primary attribution, since that is the
+ * account the person is actually working in. The portal is now restricted to
+ * the domain, so Session.getActiveUser() also resolves for internal users and
+ * is recorded alongside it - useful when the Monday context is missing, which
+ * is what happens if the page is opened outside the item view.
  */
 function clientUser_(clientMeta) {
-  if (!clientMeta) return '';
-  return clientMeta.mondayUserId || clientMeta.mondayUserName || '';
+  const mondayUser = clientMeta
+    ? (clientMeta.mondayUserId || clientMeta.mondayUserName || '')
+    : '';
+
+  let googleUser = '';
+  try {
+    googleUser = Session.getActiveUser().getEmail() || '';
+  } catch (e) {
+    // Identity is not worth failing an action over.
+    googleUser = '';
+  }
+
+  if (mondayUser && googleUser) return `${mondayUser} (${googleUser})`;
+  return String(mondayUser || googleUser || '');
 }
 
 /**
@@ -280,9 +364,13 @@ function assertNumericId_(id, label) {
  * update and delete mutations.
  *
  * One query covers all of it: board membership, the set of subitems that may
- * legitimately be touched, and the subitem board ID needed by updateSubitem.
+ * legitimately be touched, the subitem board ID needed by updateSubitem, and
+ * the current values of everything - which is what the activity log diffs the
+ * save against. The item is being read anyway, so the "before" snapshot costs
+ * no extra round-trip.
  *
- * @return {{itemId: string, subitemIds: Object, subitemBoardId: (string|null)}}
+ * @return {{itemId: string, subitemIds: Object, subitemBoardId: (string|null),
+ *           before: Object}}
  */
 function loadItemScope_(itemId) {
   const config = getConfig();
@@ -292,8 +380,15 @@ function loadItemScope_(itemId) {
     query {
       items (ids: [${id}]) {
         id
+        name
         board { id }
-        subitems { id board { id } }
+        column_values { id text }
+        subitems {
+          id
+          name
+          board { id }
+          column_values { id text }
+        }
       }
     }
   `;
@@ -309,14 +404,88 @@ function loadItemScope_(itemId) {
 
   const subitemIds = {};
   let subitemBoardId = null;
+  const beforeSubitems = {};
+
   (item.subitems || []).forEach(function (sub) {
-    subitemIds[String(sub.id)] = true;
+    const subId = String(sub.id);
+    subitemIds[subId] = true;
     if (!subitemBoardId && sub.board && sub.board.id) {
       subitemBoardId = String(sub.board.id);
     }
+    beforeSubitems[subId] = { name: sub.name || '', columns: columnTextMap_(sub.column_values) };
   });
 
-  return { itemId: id, subitemIds: subitemIds, subitemBoardId: subitemBoardId };
+  return {
+    itemId: id,
+    subitemIds: subitemIds,
+    subitemBoardId: subitemBoardId,
+    before: {
+      item: { name: item.name || '', columns: columnTextMap_(item.column_values) },
+      subitems: beforeSubitems
+    }
+  };
+}
+
+/**
+ * Flattens Monday's column_values into { columnId: text }.
+ */
+function columnTextMap_(columnValues) {
+  const map = {};
+  (columnValues || []).forEach(function (cv) {
+    map[cv.id] = cv.text || '';
+  });
+  return map;
+}
+
+/**
+ * Renders a column payload the way Monday would report it back as `text`, so
+ * a written value can be compared against the snapshot taken before the save.
+ *
+ * Dropdowns are compared as comma-joined labels, which is how Monday returns
+ * them. Reordering the same labels therefore reads as a change; that is
+ * accepted - a false entry in the log is cheaper than a missed one.
+ */
+function writtenText_(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value !== 'object') return String(value);
+
+  if (Array.isArray(value.labels)) return value.labels.join(', ');
+  if (value.label !== undefined) return String(value.label || '');
+  if (value.url !== undefined) return String(value.url || '');
+  if (value.text !== undefined) return String(value.text || '');
+  return JSON.stringify(value);
+}
+
+/**
+ * Compares a written column payload against the pre-save snapshot.
+ *
+ * @param {Object} beforeEntry A { name, columns } entry from scope.before.
+ * @param {Object} written The column payload handed to Monday.
+ * @return {Object} { columnId: [before, after] } for changed columns only.
+ */
+function diffColumns_(beforeEntry, written) {
+  const changes = {};
+  const before = beforeEntry || { name: '', columns: {} };
+  const beforeColumns = before.columns || {};
+
+  Object.keys(written || {}).forEach(function (columnId) {
+    // `name` rides in the same payload but is not a column.
+    const previous = String((columnId === 'name' ? before.name : beforeColumns[columnId]) || '').trim();
+    const next = writtenText_(written[columnId]).trim();
+    if (previous !== next) {
+      changes[columnId] = [previous, next];
+    }
+  });
+
+  return changes;
+}
+
+/**
+ * True when a diff produced nothing, so empty sections can be left out of the
+ * log payload rather than filling it with `{}`.
+ */
+function isEmpty_(object) {
+  return !object || Object.keys(object).length === 0;
 }
 
 /**
@@ -702,6 +871,16 @@ function fetchInquiryData(itemId, clientMeta) {
  */
 function processUpdateApplication(data) {
   const startedAt = new Date().getTime();
+
+  // Declared out here so the catch below can log how far the save got. A save
+  // that throws half way through is exactly the case the log needs to explain.
+  const changes = { subitems: {}, created: [], deleted: [] };
+  const errors = [];
+  // Non-fatal problems worth telling the user about. A failed upload must not
+  // lose the teacher edits, but it must not pass silently either - the save
+  // otherwise reports success while the file is missing on Monday.
+  const warnings = [];
+
   try {
     const config = getConfig();
     if (!data.itemId) {
@@ -718,12 +897,8 @@ function processUpdateApplication(data) {
 
     // STEP 1: Update Parent Item columns on Monday.com
     Logger.log(`Updating parent item ID: ${itemId}`);
-    updateParentItem(itemId, data.schoolData);
-
-    // Non-fatal problems worth telling the user about. A failed upload must
-    // not lose the teacher edits, but it must not pass silently either - the
-    // save otherwise reports success while the file is missing on Monday.
-    const warnings = [];
+    const parentWritten = updateParentItem(itemId, data.schoolData);
+    changes.item = diffColumns_(scope.before.item, parentWritten);
 
     // STEP 2: Handle Calendar replacement file upload
     let calendarUrl = null;
@@ -737,6 +912,7 @@ function processUpdateApplication(data) {
       } catch (calErr) {
         Logger.log("Calendar upload error: " + calErr);
         warnings.push(`The school calendar file could not be attached. ${reasonFor_(calErr)}`);
+        errors.push({ step: 'calendar_upload', file: data.schoolData.calendarFileName || '', error: String(calErr) });
       }
     } else if (data.schoolData.calendarText) {
       updateMondayColumn(itemId, "long_text_mkzw9xs4", { text: data.schoolData.calendarText });
@@ -754,6 +930,7 @@ function processUpdateApplication(data) {
       } catch (bellErr) {
         Logger.log("Bell schedule upload error: " + bellErr);
         warnings.push(`The bell schedule file could not be attached. ${reasonFor_(bellErr)}`);
+        errors.push({ step: 'bell_schedule_upload', file: data.schoolData.bellScheduleFileName || '', error: String(bellErr) });
       }
     } else if (data.schoolData.bellScheduleText) {
       updateMondayColumn(itemId, "long_text_mkzwd7xp", { text: data.schoolData.bellScheduleText });
@@ -769,9 +946,12 @@ function processUpdateApplication(data) {
       data.deletedSubitemIds.forEach(subId => {
         try {
           deleteMondayItem(assertOwnedSubitem_(scope, subId, 'delete'));
+          const removed = scope.before.subitems[String(subId)];
+          changes.deleted.push({ id: String(subId), name: removed ? removed.name : '' });
         } catch (delErr) {
           Logger.log(`Error deleting subitem ${subId}: ${delErr}`);
           failedDeletes.push(String(subId));
+          errors.push({ step: 'delete_subitem', subitemId: String(subId), error: String(delErr) });
         }
       });
     }
@@ -808,16 +988,28 @@ function processUpdateApplication(data) {
           } catch (tFileErr) {
             Logger.log("Teacher schedule file upload error: " + tFileErr);
             warnings.push(`The schedule file for "${teacher.name || 'a teacher position'}" could not be attached. ${reasonFor_(tFileErr)}`);
+            errors.push({
+              step: 'teacher_schedule_upload',
+              teacher: teacher.name || '',
+              file: teacher.teachingScheduleFileName || '',
+              error: String(tFileErr)
+            });
           }
         }
 
         if (teacher.subitemId) {
           // Existing subitem -> Update
-          updateSubitem(assertOwnedSubitem_(scope, teacher.subitemId, 'update'), teacher, subitemBoardId);
+          const subitemId = assertOwnedSubitem_(scope, teacher.subitemId, 'update');
+          const written = updateSubitem(subitemId, teacher, subitemBoardId);
+          const diff = diffColumns_(scope.before.subitems[subitemId], written);
+          if (!isEmpty_(diff)) {
+            changes.subitems[subitemId] = diff;
+          }
         } else {
           // New teacher card -> Create new subitem
           const newSubId = createSubitem(itemId, teacher);
           teacher.subitemId = newSubId;
+          changes.created.push({ id: String(newSubId), name: teacher.name || '' });
         }
       });
     }
@@ -835,23 +1027,25 @@ function processUpdateApplication(data) {
       } catch (pdfErr) {
         Logger.log("PDF update error: " + pdfErr);
         warnings.push('The submission PDF could not be regenerated, so the PDF link on Monday still shows the previous version.');
+        errors.push({ step: 'pdf_regeneration', error: String(pdfErr) });
       }
     }
 
     // Note: Email notification intentionally omitted per user specification.
 
     logEvent_('SAVE', {
-      status: 'success',
+      status: errors.length > 0 ? 'partial' : 'success',
       itemId: itemId,
       itemName: data.schoolData.schoolName,
       mondayUser: clientUser_(data.clientMeta),
-      summary: `Saved inquiry: ${processedTeachers.length} position(s), ${(data.deletedSubitemIds || []).length} deleted`,
-      details: {
-        positions: processedTeachers.length,
-        deleted: (data.deletedSubitemIds || []).length,
+      summary: `Saved inquiry: ${processedTeachers.length} position(s), ` +
+        `${changes.created.length} added, ${changes.deleted.length} deleted, ` +
+        `${countChanges_(changes)} field(s) changed` +
+        (errors.length > 0 ? `, ${errors.length} error(s)` : ''),
+      details: buildSaveDetails_(changes, warnings, errors, {
         calendarUploaded: !!calendarUrl,
         bellScheduleUploaded: !!bellUrl
-      },
+      }),
       startedAt: startedAt
     });
 
@@ -879,8 +1073,10 @@ function processUpdateApplication(data) {
       itemId: data ? data.itemId : '',
       itemName: (data && data.schoolData) ? data.schoolData.schoolName : '',
       mondayUser: clientUser_(data ? data.clientMeta : null),
-      summary: 'Failed to save inquiry',
-      details: error.toString(),
+      summary: `Failed to save inquiry after ${countChanges_(changes)} field change(s)`,
+      // The changes recorded before the throw say how far the save got, which
+      // is what makes a half-applied save recoverable by hand.
+      details: buildSaveDetails_(changes, warnings, errors.concat([{ step: 'save', error: error.toString() }]), {}),
       startedAt: startedAt
     });
     return { success: false, message: "Update Error: " + error.toString() };
@@ -925,6 +1121,10 @@ function updateParentItem(itemId, schoolData) {
   if (response.errors) {
     throw new Error("Monday API Update Parent Error: " + JSON.stringify(response.errors));
   }
+
+  // Returned so the caller can diff it against the pre-save snapshot for the
+  // activity log.
+  return columnValues;
 }
 
 // Maps a teacher payload field to its multi-select subitem column.
@@ -1014,7 +1214,10 @@ function updateSubitem(subitemId, teacher, subitemBoardId) {
   if (response.errors) {
     throw new Error("Monday API Update Subitem Error: " + JSON.stringify(response.errors));
   }
-  return response;
+
+  // Returned so the caller can diff it against the pre-save snapshot for the
+  // activity log.
+  return columnValues;
 }
 
 /**

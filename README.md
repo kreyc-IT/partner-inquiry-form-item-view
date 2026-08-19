@@ -17,7 +17,7 @@ teacher positions onto the linked **New Contract** or **Renewal** item.
 | :-- | :-- |
 | Apps Script ID | `131ndeYQTpXd_Yg0qn5R2fbbgtzt-UMHpDee4lYhM6sI7iJAU9sXKjvB2` |
 | Runtime | V8, timezone `America/New_York` |
-| Web app access | `ANYONE_ANONYMOUS`, executes as deploying user |
+| Web app access | `DOMAIN`, executes as deploying user |
 | Frame options | `ALLOWALL` (required for the Monday iframe) |
 
 ### Deployments
@@ -42,6 +42,15 @@ Set under **Project Settings → Script Properties**:
 | `MONDAY_BOARD_ID` | The PIF board, `6938836032` |
 | `DRIVE_FOLDER_ID` | Root Drive folder for uploads and generated PDFs |
 | `LOG_SHEET_ID` | **Optional.** Spreadsheet for the activity log (§10). Unset means logging is off. |
+| `NEW_CONTRACT_BOARD_ID` | **Optional.** Overrides the New Contract board in source. |
+| `NEW_CONTRACT_SUBITEM_BOARD_ID` | **Optional.** Overrides the New Contract subitem board. |
+| `RENEWAL_BOARD_ID` | **Optional.** Overrides the Renewal board in source. |
+| `RENEWAL_SUBITEM_BOARD_ID` | **Optional.** Overrides the Renewal subitem board. |
+
+The four optional board keys let the sync be pointed at test boards without an
+edit-and-push. Unset, the IDs in `CONTRACT_TARGET_DEFAULTS` apply. Column IDs
+are deliberately not configurable: they are structural, so a change there is a
+code change rather than a configuration one.
 
 ### Sync with Apps Script
 
@@ -499,25 +508,60 @@ person using the portal.
 | Status | `success`, `partial`, or `error` |
 | PIF Item ID | The inquiry item |
 | PIF Name | School name at the time of the action |
-| Monday User | Monday user ID, supplied by the client (see below) |
+| Monday User | Monday user ID plus the Google account, e.g. `12345 (staff@kreyco.com)` |
 | Summary | One human-readable line |
-| Details | JSON, truncated at 2,000 characters |
+| Details | JSON, truncated at 20,000 characters |
 | Duration (ms) | Server-side time for the call |
+
+### What a `SAVE` records
+
+`Details` is a JSON object carrying a field-level diff of the save. Only
+sections with content appear, so an ordinary save stays small — a typical one
+is around 200 characters:
+
+```json
+{
+  "item": { "text6__1": ["1 Main St", "2 Oak Ave"] },
+  "subitems": { "9910": { "name": ["Math 9", "Math 9/10"] } },
+  "created": [{ "id": "9931", "name": "ESL Support" }],
+  "deleted": [{ "id": "9908", "name": "Retired position" }],
+  "warnings": ["The school calendar file could not be attached. ..."],
+  "errors": [{ "step": "calendar_upload", "file": "cal.pdf", "error": "..." }]
+}
+```
+
+Every change is `[before, after]`. The "before" side comes from the snapshot
+`loadItemScope_` takes when it validates the item, so the diff costs no extra
+API call. Individual values are trimmed at 180 characters, which keeps one
+long free-text field from crowding out the errors.
+
+`errors` records the technical detail for each failed step — `calendar_upload`,
+`bell_schedule_upload`, `teacher_schedule_upload`, `delete_subitem`,
+`pdf_regeneration`, or `save` for a throw that ended the whole call. `Status`
+reads `partial` when the save completed with errors recorded.
+
+A save that throws part way through still logs everything applied before the
+throw, which is what makes a half-applied save recoverable by hand.
+
+Two known imprecisions, both deliberate: dropdown values are compared as
+comma-joined labels, so reordering the same labels reads as a change; and a
+value equal after trimming whitespace is treated as unchanged.
 
 `CONTRACT_SYNC` details include the target board and item plus a per-row
 breakdown of what was created, updated, or failed — which is the audit trail
-for writes to the contract boards.
+for writes to the contract boards. It records per-row status and errors, but
+not a field-level diff.
 
-### Why the user comes from the client
+### Where the user comes from
 
-The web app executes as the deploying user with `ANYONE_ANONYMOUS` access, so
-`Session.getActiveUser()` returns nothing useful and
-`Session.getEffectiveUser()` always returns the deployer. The only real
-attribution available is the Monday.com SDK context, so the client captures
-`context.user.id` and passes it as `clientMeta` on each call.
+The Monday.com SDK context is the primary attribution — that is the account
+the person is actually working in — so the client captures `context.user.id`
+and passes it as `clientMeta` on each call.
 
-If the SDK context has not resolved — for example when the portal is opened
-directly by URL rather than embedded in Monday.com — the column is blank.
+Since the web app moved to `DOMAIN` access, `Session.getActiveUser()` also
+resolves for internal users, and it is recorded alongside the Monday ID. That
+covers the case where the SDK context has not resolved, such as the portal
+being opened directly by URL rather than embedded in Monday.com.
 
 ### Design guarantees
 
