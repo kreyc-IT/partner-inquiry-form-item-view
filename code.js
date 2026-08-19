@@ -256,6 +256,84 @@ function escapeGql(str) {
 }
 
 /**
+ * Rejects an ID that is not a plain number.
+ *
+ * IDs are interpolated straight into the GraphQL strings below, so a
+ * non-numeric value is an injection vector rather than just a bad lookup.
+ */
+function assertNumericId_(id, label) {
+  const str = String(id === null || id === undefined ? '' : id).trim();
+  if (!/^\d+$/.test(str)) {
+    throw new Error(`Invalid ${label || 'item'} ID.`);
+  }
+  return str;
+}
+
+/**
+ * Validates the item the client asked for and returns everything the save
+ * path needs to stay inside it.
+ *
+ * The web app is reachable by every domain user, so an item ID arriving from
+ * the client is untrusted: without this check any of them could read or
+ * overwrite an arbitrary Monday item - on any board - by passing its ID.
+ * Subitem IDs get the same treatment, since they are interpolated into
+ * update and delete mutations.
+ *
+ * One query covers all of it: board membership, the set of subitems that may
+ * legitimately be touched, and the subitem board ID needed by updateSubitem.
+ *
+ * @return {{itemId: string, subitemIds: Object, subitemBoardId: (string|null)}}
+ */
+function loadItemScope_(itemId) {
+  const config = getConfig();
+  const id = assertNumericId_(itemId, 'item');
+
+  const query = `
+    query {
+      items (ids: [${id}]) {
+        id
+        board { id }
+        subitems { id board { id } }
+      }
+    }
+  `;
+
+  const response = callMondayAPI(query);
+  const item = response.data && response.data.items && response.data.items[0];
+  if (!item) {
+    throw new Error(`Item ${id} not found in Monday.com.`);
+  }
+  if (!item.board || String(item.board.id) !== String(config.boardId)) {
+    throw new Error(`Item ${id} is not on the inquiry board.`);
+  }
+
+  const subitemIds = {};
+  let subitemBoardId = null;
+  (item.subitems || []).forEach(function (sub) {
+    subitemIds[String(sub.id)] = true;
+    if (!subitemBoardId && sub.board && sub.board.id) {
+      subitemBoardId = String(sub.board.id);
+    }
+  });
+
+  return { itemId: id, subitemIds: subitemIds, subitemBoardId: subitemBoardId };
+}
+
+/**
+ * Confirms a subitem ID belongs to the parent item being saved.
+ */
+function assertOwnedSubitem_(scope, subitemId, action) {
+  const id = assertNumericId_(subitemId, 'subitem');
+  if (!scope.subitemIds[id]) {
+    throw new Error(
+      `Subitem ${id} does not belong to item ${scope.itemId}; refusing to ${action || 'modify'} it. ` +
+      `Reload the form and try again.`
+    );
+  }
+  return id;
+}
+
+/**
  * Updates a specific column on Monday.com
  */
 function updateMondayColumn(itemId, columnId, value) {
@@ -281,7 +359,11 @@ function updateMondayColumn(itemId, columnId, value) {
     }
   `;
 
-  return callMondayAPI(query);
+  const response = callMondayAPI(query);
+  if (response.errors) {
+    throw new Error("Monday API Update Column Error: " + JSON.stringify(response.errors));
+  }
+  return response;
 }
 
 // ========================================================================
@@ -471,9 +553,14 @@ function fetchInquiryData(itemId, clientMeta) {
       return { success: false, message: "No Item ID provided." };
     }
 
+    // The ID comes from the client, so confirm it is numeric and really on
+    // the inquiry board before reading anything back to the browser.
+    const safeItemId = assertNumericId_(itemId, 'item');
+
     const query = `
       query {
-        items (ids: [${itemId}]) {
+        items (ids: [${safeItemId}]) {
+          board { id }
           id
           name
           column_values {
@@ -501,6 +588,11 @@ function fetchInquiryData(itemId, clientMeta) {
     }
 
     const item = response.data.items[0];
+    const config = getConfig();
+    if (!item.board || String(item.board.id) !== String(config.boardId)) {
+      return { success: false, message: `Item ${safeItemId} is not on the inquiry board.` };
+    }
+
     const colMap = {};
     item.column_values.forEach(cv => {
       colMap[cv.id] = cv.text || '';
@@ -612,10 +704,14 @@ function processUpdateApplication(data) {
   const startedAt = new Date().getTime();
   try {
     const config = getConfig();
-    const itemId = data.itemId;
-    if (!itemId) {
+    if (!data.itemId) {
       throw new Error("Missing parent Item ID for update.");
     }
+
+    // Every ID in this payload is client-supplied. Resolve the item once and
+    // reuse the result to keep every later write inside it.
+    const scope = loadItemScope_(data.itemId);
+    const itemId = scope.itemId;
 
     const submissionDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const mainFolder = config.driveFolderId ? DriveApp.getFolderById(config.driveFolderId) : null;
@@ -657,13 +753,18 @@ function processUpdateApplication(data) {
     }
 
     // STEP 3: Handle Deleted Subitems
+    // Failures are collected rather than thrown so the teacher edits below
+    // still get applied; they are reported at the end so the client keeps the
+    // delete queue and the user can retry.
+    const failedDeletes = [];
     if (data.deletedSubitemIds && data.deletedSubitemIds.length > 0) {
       Logger.log(`Deleting ${data.deletedSubitemIds.length} subitem(s)...`);
       data.deletedSubitemIds.forEach(subId => {
         try {
-          deleteMondayItem(subId);
+          deleteMondayItem(assertOwnedSubitem_(scope, subId, 'delete'));
         } catch (delErr) {
           Logger.log(`Error deleting subitem ${subId}: ${delErr}`);
+          failedDeletes.push(String(subId));
         }
       });
     }
@@ -672,10 +773,11 @@ function processUpdateApplication(data) {
     let processedTeachers = data.teachers || [];
     if (processedTeachers.length > 0) {
       // Updating a subitem needs the board it lives on, which is the subitem
-      // board, not the parent board. Resolve it once for the whole save
-      // instead of per teacher - it is an extra API round-trip each time.
-      let subitemBoardId = null;
-      if (processedTeachers.some(function (t) { return !!t.subitemId; })) {
+      // board, not the parent board. loadItemScope_ already read it off this
+      // item's existing subitems; the column lookup is only needed when the
+      // item had none, in which case there is nothing to update anyway.
+      let subitemBoardId = scope.subitemBoardId;
+      if (!subitemBoardId && processedTeachers.some(function (t) { return !!t.subitemId; })) {
         subitemBoardId = getSubitemBoardId();
         if (!subitemBoardId) {
           throw new Error("Could not resolve the subitem board ID; teacher edits were not saved.");
@@ -703,7 +805,7 @@ function processUpdateApplication(data) {
 
         if (teacher.subitemId) {
           // Existing subitem -> Update
-          updateSubitem(teacher.subitemId, teacher, subitemBoardId);
+          updateSubitem(assertOwnedSubitem_(scope, teacher.subitemId, 'update'), teacher, subitemBoardId);
         } else {
           // New teacher card -> Create new subitem
           const newSubId = createSubitem(itemId, teacher);
@@ -743,6 +845,16 @@ function processUpdateApplication(data) {
       },
       startedAt: startedAt
     });
+
+    if (failedDeletes.length > 0) {
+      // Everything else saved, but saying "success" here would let the client
+      // clear its delete queue and leave those subitems on Monday for good.
+      return {
+        success: false,
+        message: "Your edits were saved, but these teacher position(s) could not be removed: " +
+          failedDeletes.join(', ') + ". Please try removing them again."
+      };
+    }
 
     return { success: true, message: "Inquiry submission updated successfully!" };
 
@@ -922,12 +1034,16 @@ function createSubitem(parentId, teacher) {
 function deleteMondayItem(itemId) {
   const query = `
     mutation {
-      delete_item (item_id: ${itemId}) {
+      delete_item (item_id: ${assertNumericId_(itemId, 'item')}) {
         id
       }
     }
   `;
-  return callMondayAPI(query);
+  const response = callMondayAPI(query);
+  if (response.errors) {
+    throw new Error("Monday API Delete Error: " + JSON.stringify(response.errors));
+  }
+  return response;
 }
 
 // ========================================================================
@@ -1282,7 +1398,7 @@ function buildContractSubitemName(teacher, pifParentName) {
 function getPifLinkInfo(pifItemId) {
   const query = `
     query {
-      items (ids: [${pifItemId}]) {
+      items (ids: [${assertNumericId_(pifItemId, 'item')}]) {
         id
         name
         column_values (ids: ["${PIF_LEAD_ID_COLUMN}"]) {
@@ -1446,6 +1562,11 @@ function findContractTargets(pifItemId) {
     if (!pifItemId) {
       return { success: false, message: "No PIF item ID provided." };
     }
+
+    // Same untrusted-ID rules as the save path: numeric, and on the inquiry
+    // board. Otherwise the sync could be aimed at an arbitrary item.
+    const scope = loadItemScope_(pifItemId);
+    pifItemId = scope.itemId;
 
     const info = getPifLinkInfo(pifItemId);
     const diagnostics = [];
@@ -1643,7 +1764,7 @@ function getTargetSubitems(target, targetItemId) {
 
   const query = `
     query {
-      items (ids: [${targetItemId}]) {
+      items (ids: [${assertNumericId_(targetItemId, 'target item')}]) {
         id
         name
         group { id title }
@@ -1938,7 +2059,7 @@ function updateContractSubitem(target, subitemId, columnValues) {
     mutation {
       change_multiple_column_values (
         board_id: ${target.subitemBoardId},
-        item_id: ${subitemId},
+        item_id: ${assertNumericId_(subitemId, 'target subitem')},
         column_values: ${JSON.stringify(JSON.stringify(columnValues))},
         create_labels_if_missing: true
       ) {
@@ -1955,10 +2076,11 @@ function updateContractSubitem(target, subitemId, columnValues) {
 }
 
 function createContractSubitem(parentItemId, name, columnValues) {
+  const safeParentId = assertNumericId_(parentItemId, 'target item');
   const query = `
     mutation {
       create_subitem (
-        parent_item_id: ${parentItemId},
+        parent_item_id: ${safeParentId},
         item_name: "${escapeGql(name)}",
         column_values: ${JSON.stringify(JSON.stringify(columnValues))},
         create_labels_if_missing: true
